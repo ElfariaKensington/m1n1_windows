@@ -344,7 +344,9 @@ static bool scanout_present_begin(void *opaque, uint64_t surface_iova,
     (void)opaque;
     return request && display_scanout_present_begin(
                           surface_iova, request->Width, request->Height,
-                          request->Stride, cookie);
+                          request->Stride,
+                          request->Format == HV_AGX_SCANOUT_FORMAT_RGBA8888,
+                          cookie);
 }
 
 #ifdef EXP806_SCANOUT_PATTERN

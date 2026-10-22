@@ -75,7 +75,7 @@ bool dcp_iomfb_owner_active(const dcp_dev_t *dcp);
 void dcp_iomfb_owner_arm(dcp_dev_t *dcp, u32 swap_id);
 int dcp_iomfb_owner_poll_latch(dcp_dev_t *dcp, u32 expected_swap_id);
 int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
-                            u32 height, u32 stride);
+                            u32 height, u32 stride, u32 dcp_format);
 
 dcp_dev_t *dcp_init(const display_config_t *config);
 

@@ -399,7 +399,8 @@ static bool display_iomfb_swap_observer_run(void)
     swap_id = dcp_iomfb_owner_present(dcp, fb_dva,
                                       cur_boot_args.video.width,
                                       cur_boot_args.video.height,
-                                      cur_boot_args.video.stride);
+                                      cur_boot_args.video.stride,
+                                      DCP_IOMFB_FORMAT_BGRA);
     if (swap_id <= 0) {
         printf("display: one-swap observer rejected before A408\n");
         return false;
@@ -500,7 +501,8 @@ static u32 display_guest_owner_present_begin(void *opaque, u64 iova,
     int swap_id;
 
     (void)opaque;
-    swap_id = dcp_iomfb_owner_present(dcp, iova, width, height, stride);
+    swap_id = dcp_iomfb_owner_present(dcp, iova, width, height, stride,
+                                      DCP_IOMFB_FORMAT_BGRA);
     return swap_id > 0 ? (u32)swap_id : 0;
 }
 
@@ -587,7 +589,7 @@ static void display_guest_unmap(void *opaque, u64 iova, u64 size)
 }
 
 static bool display_scanout_build_layer(u64 iova, u32 width, u32 height,
-                                        u32 stride, dcp_layer_t *layer,
+                                        u32 stride, bool rgba, dcp_layer_t *layer,
                                         dcp_rect_t *source, dcp_rect_t *target)
 {
     struct display_guest_rect destination;
@@ -604,7 +606,7 @@ static bool display_scanout_build_layer(u64 iova, u32 width, u32 height,
     layer->plane_cnt = 1;
     layer->width = width;
     layer->height = height;
-    layer->surface_fmt = FMT_BGRA;
+    layer->surface_fmt = rgba ? FMT_RGBA : FMT_BGRA;
     layer->colorspace = 2;
     layer->eotf = EOTF_GAMMA_SDR;
     layer->transform = XFRM_NONE;
@@ -679,19 +681,20 @@ void display_scanout_unmap(unsigned dart_index, u64 iova, u64 size)
 }
 
 bool display_scanout_present_begin(u64 surface_iova, u32 width, u32 height,
-                                   u32 stride, u64 *cookie)
+                                   u32 stride, bool rgba, u64 *cookie)
 {
     dcp_layer_t layer;
     dcp_rect_t source;
     dcp_rect_t target;
 
     if (!cookie || scanout_swap_active || !display_scanout_ready() ||
-        !display_scanout_build_layer(surface_iova, width, height, stride,
+        !display_scanout_build_layer(surface_iova, width, height, stride, rgba,
                                      &layer, &source, &target))
         return false;
     if (dcp_iomfb_owner_active(dcp)) {
         int owner_swap_id = dcp_iomfb_owner_present(
-            dcp, surface_iova, width, height, stride);
+            dcp, surface_iova, width, height, stride,
+            rgba ? DCP_IOMFB_FORMAT_RGBA : DCP_IOMFB_FORMAT_BGRA);
         if (owner_swap_id <= 0)
             return false;
         scanout_owner_swap_id = (u32)owner_swap_id;
@@ -763,13 +766,13 @@ bool display_scanout_quiesce_begin(u64 *cookie)
     if (!cookie || scanout_swap_active || !display_scanout_ready() || !fb_dva ||
         !display_scanout_build_layer(fb_dva, cur_boot_args.video.width,
                                      cur_boot_args.video.height,
-                                     cur_boot_args.video.stride,
+                                     cur_boot_args.video.stride, false,
                                      &layer, &source, &target))
         return false;
     if (dcp_iomfb_owner_active(dcp)) {
         int owner_swap_id = dcp_iomfb_owner_present(
             dcp, fb_dva, cur_boot_args.video.width, cur_boot_args.video.height,
-            cur_boot_args.video.stride);
+            cur_boot_args.video.stride, DCP_IOMFB_FORMAT_BGRA);
         if (owner_swap_id <= 0)
             return false;
         scanout_owner_swap_id = (u32)owner_swap_id;

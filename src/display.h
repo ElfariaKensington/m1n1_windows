@@ -30,8 +30,9 @@ bool display_scanout_reserve_iova(u64 size, u64 alignment, u64 *iova);
 void display_scanout_free_iova(u64 iova, u64 size);
 bool display_scanout_map(unsigned dart_index, u64 iova, u64 pa, u64 size);
 void display_scanout_unmap(unsigned dart_index, u64 iova, u64 size);
+/* D3D-FS1: rgba selects the RGBA8888 surface order (else BGRA8888) */
 bool display_scanout_present_begin(u64 surface_iova, u32 width, u32 height,
-                                   u32 stride, u64 *cookie);
+                                   u32 stride, bool rgba, u64 *cookie);
 int display_scanout_present_poll(u64 cookie, u32 *swap_id);
 int display_scanout_latch_poll(u32 expected_swap_id);
 bool display_scanout_observe_latched(u32 *swap_id, u64 *surface_iova);

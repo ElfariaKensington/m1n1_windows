@@ -7,7 +7,6 @@
 #endif
 #define SURFACES 4u
 #define SECONDARY_SURFACES 5u
-#define FORMAT_BGRA 0x42475241u
 #define XFER_SDR 13u
 #define COLORSPACE_SRGB 1u
 #define SET_BACKGROUND (1u << 31)
@@ -102,6 +101,7 @@ bool dcp_iomfb_present_build_start_v13_5(void *input, size_t input_size)
 bool dcp_iomfb_present_build_v13_5(struct dcp_iomfb_present_request *request,
                                    uint64_t iova, uint32_t width,
                                    uint32_t height, uint32_t stride,
+                                   uint32_t dcp_format,
                                    bool clear_boot_surfaces)
 {
     struct iomfb_submit_v13_5 *wire;
@@ -109,7 +109,8 @@ bool dcp_iomfb_present_build_v13_5(struct dcp_iomfb_present_request *request,
     uint64_t total = (uint64_t)height * stride;
     if (!request || !iova || !width || !height ||
         (uint64_t)stride < (uint64_t)width * 4 || (stride & 63) ||
-        !total || total > UINT32_MAX)
+        !total || total > UINT32_MAX ||
+        (dcp_format != DCP_IOMFB_FORMAT_BGRA && dcp_format != DCP_IOMFB_FORMAT_RGBA))
         return false;
     memset(request, 0, sizeof(*request));
     wire = (struct iomfb_submit_v13_5 *)request->bytes;
@@ -129,7 +130,7 @@ bool dcp_iomfb_present_build_v13_5(struct dcp_iomfb_present_request *request,
     for (unsigned i = 0; i < SECONDARY_SURFACES; i++) wire->secondary_null[i] = 1;
     wire->unknown_u32_pointer_null = wire->unknown_u32_out_null = 1;
     surface = &wire->surfaces[0].base;
-    surface->format = FORMAT_BGRA;
+    surface->format = dcp_format;
     surface->transfer_function = XFER_SDR;
     surface->colorspace = COLORSPACE_SRGB;
     surface->stride = stride;

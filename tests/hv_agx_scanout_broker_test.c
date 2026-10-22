@@ -37,15 +37,23 @@ static void stage_register(struct hv_agx_scanout_broker *broker, uint64_t sequen
     write32(broker, HV_AGX_SCANOUT_REG_COMMAND, HV_AGX_SCANOUT_CMD_REGISTER_POOL);
 }
 
+static void stage_present_format(struct hv_agx_scanout_broker *broker, uint64_t sequence,
+                                 uint64_t offset, uint32_t format);
 static void stage_present(struct hv_agx_scanout_broker *broker, uint64_t sequence,
                           uint64_t offset)
+{
+    stage_present_format(broker, sequence, offset, HV_AGX_SCANOUT_FORMAT_BGRA8888);
+}
+
+static void stage_present_format(struct hv_agx_scanout_broker *broker, uint64_t sequence,
+                                 uint64_t offset, uint32_t format)
 {
     write64(broker, HV_AGX_SCANOUT_REG_SURFACE_OFFSET, offset);
     write64(broker, HV_AGX_SCANOUT_REG_SURFACE_SIZE, HV_AGX_SCANOUT_J313_SURFACE_SIZE);
     write32(broker, HV_AGX_SCANOUT_REG_WIDTH, HV_AGX_SCANOUT_J313_WIDTH);
     write32(broker, HV_AGX_SCANOUT_REG_HEIGHT, HV_AGX_SCANOUT_J313_HEIGHT);
     write32(broker, HV_AGX_SCANOUT_REG_STRIDE, HV_AGX_SCANOUT_J313_STRIDE);
-    write32(broker, HV_AGX_SCANOUT_REG_FORMAT, HV_AGX_SCANOUT_FORMAT_BGRA8888);
+    write32(broker, HV_AGX_SCANOUT_REG_FORMAT, format);
     write64(broker, HV_AGX_SCANOUT_REG_REQUEST_SEQUENCE, sequence);
     write32(broker, HV_AGX_SCANOUT_REG_COMMAND, HV_AGX_SCANOUT_CMD_PRESENT);
 }
@@ -62,7 +70,8 @@ static void test_identity_and_exact_mmio(void)
            HV_AGX_SCANOUT_ABI_VERSION);
     assert(read32(&broker, HV_AGX_SCANOUT_REG_CAPABILITIES) ==
            (HV_AGX_SCANOUT_CAP_FIXED_J313 | HV_AGX_SCANOUT_CAP_BGRA8888 |
-            HV_AGX_SCANOUT_CAP_REGISTERED_POOL | HV_AGX_SCANOUT_CAP_APPLIED_RECEIPT));
+            HV_AGX_SCANOUT_CAP_REGISTERED_POOL | HV_AGX_SCANOUT_CAP_APPLIED_RECEIPT |
+            HV_AGX_SCANOUT_CAP_RGBA8888));
     assert(read32(&broker, HV_AGX_SCANOUT_REG_STATE) == HV_AGX_SCANOUT_UNREGISTERED);
     assert(read64(&broker, HV_AGX_SCANOUT_REG_RECEIPT_SEQUENCE) == 0);
     assert(read64(&broker, HV_AGX_SCANOUT_REG_APPLIED_SEQUENCE) == 0);
@@ -389,8 +398,32 @@ static void test_release_without_quiesce_proof_fails_closed(void)
     assert(read64(&broker, HV_AGX_SCANOUT_REG_APPLIED_SEQUENCE) == 2);
 }
 
+/* D3D-FS1: an RGBA8888 present is accepted and carries its format to the
+ * consumer; any other format is an invalid surface. */
+static void test_rgba_present_format_reaches_the_request(void)
+{
+    struct hv_agx_scanout_broker broker;
+    struct hv_agx_scanout_request request;
+
+    hv_agx_scanout_broker_init(&broker);
+    stage_register(&broker, 1);
+    assert(hv_agx_scanout_broker_take_pending(&broker, &request));
+    assert(hv_agx_scanout_broker_complete_register(
+        &broker, 1, HV_AGX_SCANOUT_RESULT_OK, UINT64_C(0x880000000),
+        UINT64_C(0xf00000000)));
+    stage_present_format(&broker, 2, 0, HV_AGX_SCANOUT_FORMAT_RGBA8888);
+    assert(hv_agx_scanout_broker_take_pending(&broker, &request));
+    assert(request.Format == HV_AGX_SCANOUT_FORMAT_RGBA8888);
+    assert(hv_agx_scanout_broker_complete_present(&broker, 2,
+                                                    HV_AGX_SCANOUT_RESULT_OK, 5));
+    stage_present_format(&broker, 3, 0, 3u);
+    assert(read32(&broker, HV_AGX_SCANOUT_REG_RESULT) ==
+           HV_AGX_SCANOUT_RESULT_INVALID_SURFACE);
+}
+
 int main(void)
 {
+    test_rgba_present_format_reaches_the_request();
     test_identity_and_exact_mmio();
     test_register_snapshot_and_completion();
     test_sequence_and_busy_rejection();

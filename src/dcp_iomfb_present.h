@@ -15,9 +15,14 @@ struct dcp_iomfb_present_request {
     uint8_t bytes[DCP_IOMFB_V13_5_SWAP_SUBMIT_INPUT_SIZE];
 };
 bool dcp_iomfb_present_build_start_v13_5(void *input, size_t input_size);
+/* D3D-FS1: DCP surface fourccs (Asahi iomfb_plane.h DCP_FORMAT_BGRA 'ARGB',
+ * DCP_FORMAT_RGBA 'ABGR'). */
+#define DCP_IOMFB_FORMAT_BGRA 0x42475241u
+#define DCP_IOMFB_FORMAT_RGBA 0x52474241u
 bool dcp_iomfb_present_build_v13_5(struct dcp_iomfb_present_request *request,
                                    uint64_t surface_iova, uint32_t width,
                                    uint32_t height, uint32_t stride,
+                                   uint32_t dcp_format,
                                    bool clear_boot_surfaces);
 bool dcp_iomfb_present_set_swap_id_v13_5(
     struct dcp_iomfb_present_request *request, uint32_t swap_id);

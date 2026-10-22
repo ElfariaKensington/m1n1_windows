@@ -6,7 +6,8 @@
 
 #define SCANOUT_V1_CAPS                                                         \
     (HV_AGX_SCANOUT_CAP_FIXED_J313 | HV_AGX_SCANOUT_CAP_BGRA8888 |             \
-     HV_AGX_SCANOUT_CAP_REGISTERED_POOL | HV_AGX_SCANOUT_CAP_APPLIED_RECEIPT)
+     HV_AGX_SCANOUT_CAP_REGISTERED_POOL | HV_AGX_SCANOUT_CAP_APPLIED_RECEIPT | \
+     HV_AGX_SCANOUT_CAP_RGBA8888)
 
 static bool add_overflows(uint64_t left, uint64_t right)
 {
@@ -49,7 +50,9 @@ static bool surface_valid(const struct hv_agx_scanout_broker *broker)
         broker->staging_width != HV_AGX_SCANOUT_J313_WIDTH ||
         broker->staging_height != HV_AGX_SCANOUT_J313_HEIGHT ||
         broker->staging_stride != HV_AGX_SCANOUT_J313_STRIDE ||
-        broker->staging_format != HV_AGX_SCANOUT_FORMAT_BGRA8888 ||
+        (broker->staging_format != HV_AGX_SCANOUT_FORMAT_BGRA8888 &&
+         (broker->staging_format != HV_AGX_SCANOUT_FORMAT_RGBA8888 ||
+          !(broker->capabilities & HV_AGX_SCANOUT_CAP_RGBA8888))) ||
         add_overflows(offset, size) ||
         offset + size > broker->registered_pool_size)
         return false;

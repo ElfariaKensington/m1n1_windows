@@ -633,7 +633,7 @@ int dcp_iomfb_owner_poll_latch(dcp_dev_t *dcp, u32 expected_swap_id)
 }
 
 int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
-                            u32 height, u32 stride)
+                            u32 height, u32 stride, u32 dcp_format)
 {
     u8 start_input[DCP_IOMFB_V13_5_SWAP_START_SIZE];
     u8 start_output[DCP_IOMFB_V13_5_SWAP_START_SIZE] = {0};
@@ -645,6 +645,7 @@ int dcp_iomfb_owner_present(dcp_dev_t *dcp, u64 surface_iova, u32 width,
                                               sizeof(start_input)) ||
         !dcp_iomfb_present_build_v13_5(&dcp->iomfb_present_request,
                                         surface_iova, width, height, stride,
+                                        dcp_format,
                                         !dcp->iomfb_surfaces_cleared))
         return -1;
     if (!dcp_iomfb_owner_call(dcp, "A407", start_input, sizeof(start_input),

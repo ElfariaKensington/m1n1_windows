@@ -6,15 +6,22 @@
 #include "../src/dcp_iomfb_present.h"
 static uint32_t u32at(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static uint64_t u64at(const uint8_t *p) { uint64_t v; memcpy(&v, p, 8); return v; }
+static unsigned count_u32(const uint8_t *p, size_t n, uint32_t value)
+{
+    unsigned found = 0;
+    for (size_t i = 0; i + 4 <= n; ++i)
+        found += u32at(p + i) == value;
+    return found;
+}
 int main(void)
 {
     struct dcp_iomfb_present_request req;
     uint8_t start_input[0x18];
     uint8_t start[0x18] = {0}, submit[0xc] = {0};
     uint32_t swap_id = 0;
-    assert(!dcp_iomfb_present_build_v13_5(&req, 0x100000, 2560, 1600, 10176, true));
-    assert(!dcp_iomfb_present_build_v13_5(&req, 0x100000, UINT32_MAX, 2, UINT32_MAX, true));
-    assert(dcp_iomfb_present_build_v13_5(&req, 0x12340000, 2560, 1600, 10240, true));
+    assert(!dcp_iomfb_present_build_v13_5(&req, 0x100000, 2560, 1600, 10176, DCP_IOMFB_FORMAT_BGRA, true));
+    assert(!dcp_iomfb_present_build_v13_5(&req, 0x100000, UINT32_MAX, 2, UINT32_MAX, DCP_IOMFB_FORMAT_BGRA, true));
+    assert(dcp_iomfb_present_build_v13_5(&req, 0x12340000, 2560, 1600, 10240, DCP_IOMFB_FORMAT_BGRA, true));
     assert(u64at(req.bytes + 0x40) == 0x861202);
     assert(u64at(req.bytes + 0x48) == 4);
     assert(u32at(req.bytes + 0x54) == 3);
@@ -50,9 +57,18 @@ int main(void)
     assert(start_input[16] == 0 && start_input[17] == 1);
     for (unsigned int i = 18; i < sizeof(start_input); ++i)
         assert(start_input[i] == 0);
-    assert(dcp_iomfb_present_build_v13_5(&req, 0x12340000, 2560, 1600, 10240, false));
+    assert(dcp_iomfb_present_build_v13_5(&req, 0x12340000, 2560, 1600, 10240, DCP_IOMFB_FORMAT_BGRA, false));
     assert(u32at(req.bytes + 0x104) == 1 && u32at(req.bytes + 0x108) == 1);
     assert(u32at(req.bytes + 0x10c) == 0);
+    /* D3D-FS1: the surface fourcc follows the requested format (Asahi
+     * iomfb_plane.h DCP_FORMAT_BGRA 'ARGB', DCP_FORMAT_RGBA 'ABGR'). */
+    assert(count_u32(req.bytes, sizeof(req.bytes), 0x42475241u) == 1);
+    assert(count_u32(req.bytes, sizeof(req.bytes), 0x52474241u) == 0);
+    assert(dcp_iomfb_present_build_v13_5(&req, 0x12340000, 2560, 1600, 10240, DCP_IOMFB_FORMAT_RGBA, false));
+    assert(count_u32(req.bytes, sizeof(req.bytes), 0x52474241u) == 1);
+    assert(count_u32(req.bytes, sizeof(req.bytes), 0x42475241u) == 0);
+    assert(!dcp_iomfb_present_build_v13_5(&req, 0x12340000, 2560, 1600, 10240, 0x30313272u, false));
+    assert(dcp_iomfb_present_build_v13_5(&req, 0x12340000, 2560, 1600, 10240, DCP_IOMFB_FORMAT_BGRA, false));
     assert(dcp_iomfb_present_set_swap_id_v13_5(&req, 0x42));
     assert(u32at(req.bytes + 0x50) == 0x42);
     memcpy(start, &(uint32_t){0x42}, 4);
