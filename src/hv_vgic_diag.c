@@ -92,14 +92,19 @@ u64 hv_vgic_diag_eoi_lr(u64 lr)
 bool hv_vgic_diag_priority_deliverable(u32 priority, u32 pmr, u32 running_priority)
 {
     /*
-     * Until ICC_BPR1_EL1 and group-priority preemption are modelled, comparing raw
-     * priorities against the active LR can deadlock the guest: Windows may leave an SGI
-     * active while a timer of the same group priority must still be observed.  PMR is the
-     * invariant we do emulate correctly.  Keep running_priority in the API so telemetry
-     * and the eventual BPR-aware implementation share the same call sites.
+     * GICv3 signals an interrupt only if it is unmasked by PMR and its group priority
+     * preempts the running priority.  Windows depends on the second rule: it keeps PMR
+     * at 0xf0 and raises IRQL in software, so an interrupt that arrives at or below the
+     * current IRQL is acknowledged, left ACTIVE and queued for replay without an EOI.
+     * Its ISR exit path lowers IRQL without that replay and suppresses DPC delivery
+     * while one is queued, which is safe only because the active interrupt's running
+     * priority blocks every equal or lower one on hardware.  Ignoring it here let the
+     * NVMe INTx (0x80) nest inside the clock ISR and stay ACTIVE forever (EXP1890).
+     *
+     * Windows writes ICC_BPR1_EL1 = 3 and we report five priority bits, so the group
+     * priority is the whole implemented priority and a raw comparison is exact.
      */
-    (void)running_priority;
-    return priority < pmr;
+    return priority < pmr && priority < running_priority;
 }
 
 bool hv_vgic_diag_should_log_route_transition(u32 transition_count)

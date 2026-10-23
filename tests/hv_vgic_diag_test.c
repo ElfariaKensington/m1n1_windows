@@ -155,13 +155,38 @@ static void test_level_sync_covers_every_lr_state(void)
     }
 }
 
-static void test_priority_is_masked_only_by_pmr_until_bpr_is_emulated(void)
+static void test_priority_is_masked_by_pmr_and_running_priority(void)
 {
-    assert(hv_vgic_diag_priority_deliverable(0x20, 0xf8, 0xff));
-    assert(hv_vgic_diag_priority_deliverable(0x10, 0xf8, 0x20));
-    assert(hv_vgic_diag_priority_deliverable(0x20, 0xf8, 0x20));
-    assert(hv_vgic_diag_priority_deliverable(0x40, 0xf8, 0x20));
+    /* Idle CPU interface (running priority 0xff): only PMR masks. */
+    assert(hv_vgic_diag_priority_deliverable(0x20, 0xf0, 0xff));
+    assert(hv_vgic_diag_priority_deliverable(0x80, 0xf0, 0xff));
     assert(!hv_vgic_diag_priority_deliverable(0x20, 0x20, 0xff));
+    assert(!hv_vgic_diag_priority_deliverable(0xf0, 0xf0, 0xff));
+
+    /* A higher-priority interrupt preempts the active one (IPI 0x20 over clock 0x30). */
+    assert(hv_vgic_diag_priority_deliverable(0x20, 0xf0, 0x30));
+    assert(hv_vgic_diag_priority_deliverable(0x10, 0xf0, 0x20));
+
+    /*
+     * EXP1890: Windows keeps PMR at 0xf0 and relies on the running priority.  The
+     * NVMe INTx (0x80) delivered inside the clock ISR (vtimer 0x30 active) was deferred
+     * by the kernel without an EOI and its ISR exit never replayed it, leaving LR 64
+     * ACTIVE forever.  Equal and lower priorities must wait for the active one's EOI.
+     */
+    assert(!hv_vgic_diag_priority_deliverable(0x80, 0xf0, 0x30));
+    assert(!hv_vgic_diag_priority_deliverable(0x30, 0xf0, 0x30));
+    assert(!hv_vgic_diag_priority_deliverable(0x80, 0xf0, 0x80));
+}
+
+static void test_recovery_wake_respects_running_priority(void)
+{
+    const uint64_t pending = 1ULL << 62;
+    const uint64_t timer = (0x30ULL << 48) | 18;
+
+    assert(hv_vgic_diag_lr_needs_recovery_wake(pending | timer, 18, 0xf0, 0xff));
+    assert(hv_vgic_diag_lr_needs_recovery_wake(pending | timer, 18, 0xf0, 0x80));
+    assert(!hv_vgic_diag_lr_needs_recovery_wake(pending | timer, 18, 0xf0, 0x20));
+    assert(!hv_vgic_diag_lr_needs_recovery_wake(pending | timer, 18, 0xf0, 0x30));
 }
 
 static void test_route_transition_logging_is_bounded_but_keeps_landmarks(void)
@@ -188,7 +213,8 @@ int main(void)
     test_eoi_preserves_a_repending_interrupt();
     test_timer_reexpiry_coalesces_into_the_active_lr();
     test_level_sync_covers_every_lr_state();
-    test_priority_is_masked_only_by_pmr_until_bpr_is_emulated();
+    test_priority_is_masked_by_pmr_and_running_priority();
+    test_recovery_wake_respects_running_priority();
     test_route_transition_logging_is_bounded_but_keeps_landmarks();
     puts("hv_vgic_diag_test: ok");
     return 0;
