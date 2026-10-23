@@ -1937,10 +1937,16 @@ int hv_vgicv3_enable_virtual_interrupts(void)
     //
     // The architectural reset value really is 0, and a guest that programs ICC_PMR_EL1
     // itself would fix it -- but EDK2 never got that far here, so open the mask during
-    // bring-up. Also set VENG0: the original only set VENG1 despite the comment above
-    // saying both groups.
+    // bring-up.
     //
-    msr(ICH_VMCR_EL2, ((0xFFUL << 24) | BIT(1) | BIT(0)));
+    // VENG0/VENG1 stay clear: IAR/EOIR are emulated, so the hardware never sees an
+    // interrupt become active, its ICH_AP1R stays empty and, with VENG1 set, it signals
+    // every Pending LR under VPMR regardless of the emulated running priority.  EXP1894:
+    // a pending timer LR blocked by an ACTIVE SGI was signalled, the emulated IAR
+    // returned spurious and five vCPUs re-entered the IRQ vector forever.  The virtual
+    // IRQ is driven only through HCR_EL2.VI by hv_vgic3_update_vi().
+    //
+    msr(ICH_VMCR_EL2, 0xFFUL << 24);
     //bit 0 enables the virtual CPU interface registers
     //AMO/IMO/FMO set by m1n1 on boot
     //
@@ -2196,20 +2202,20 @@ void hv_vgic3_update_vi(void){
     u64 vmcr = mrs(ICH_VMCR_EL2);
     u8 vpmr = (vmcr >> 24) & 0xff;
     u8 running_priority = hv_vgic3_running_priority();
-    bool veng1 = vmcr & BIT(1);
     bool signal = false;
 
-    if(veng1){
-        for(int lr = 0; lr < hv_vgic3_num_lrs(); lr++){
-            u64 lr_val = hv_vgic3_read_lr(lr);
-            // Exact State == Pending (0b01), not merely the pending bit: a
-            // pending+active LR (0b11) must not re-signal while it is active.
-            if(((lr_val >> ICH_LR_STATE_SHIFT) & ICH_LR_STATE_MASK) != 1)
-                continue;
-            u8 priority = (lr_val >> ICH_LR_PRIORITY_SHIFT) & ICH_LR_PRIORITY_MASK;
-            if(hv_vgic_diag_priority_deliverable(priority, vpmr, running_priority)){
-                signal = true;
-            }
+    // Group 1 is always enabled: VMCR.VENG1 is kept clear so the hardware interface
+    // cannot signal behind the emulated running priority
+    // (see hv_vgicv3_enable_virtual_interrupts).
+    for(int lr = 0; lr < hv_vgic3_num_lrs(); lr++){
+        u64 lr_val = hv_vgic3_read_lr(lr);
+        // Exact State == Pending (0b01), not merely the pending bit: a
+        // pending+active LR (0b11) must not re-signal while it is active.
+        if(((lr_val >> ICH_LR_STATE_SHIFT) & ICH_LR_STATE_MASK) != 1)
+            continue;
+        u8 priority = (lr_val >> ICH_LR_PRIORITY_SHIFT) & ICH_LR_PRIORITY_MASK;
+        if(hv_vgic_diag_priority_deliverable(priority, vpmr, running_priority)){
+            signal = true;
         }
     }
 
