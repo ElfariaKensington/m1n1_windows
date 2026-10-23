@@ -37,5 +37,8 @@ struct hv_vgic_level_result hv_vgic_diag_sync_level_lr(u64 lr, bool asserted);
 u64 hv_vgic_diag_eoi_lr(u64 lr);
 bool hv_vgic_diag_priority_deliverable(u32 priority, u32 pmr, u32 running_priority);
 bool hv_vgic_diag_should_log_route_transition(u32 transition_count);
+u32 hv_vgic_diag_priority_word_write(u32 word, u32 byte_offset, u32 width_log2, u64 val);
+u64 hv_vgic_diag_priority_word_read(u32 word, u32 byte_offset, u32 width_log2);
+u32 hv_vgic_diag_spi_priority(const u32 *regs, u32 intid);
 
 #endif

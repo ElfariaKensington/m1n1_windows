@@ -894,7 +894,10 @@ static bool handle_vgic_dist_access(struct exc_info *ctx, u64 addr, u64 *val, bo
         else if ( (register_handled == false) && (relative_addr >= GIC_DIST_IPRIORITYR0) && (relative_addr <= GIC_DIST_IPRIORITYR254) ) {
             u32 reg_num;
             reg_num = (relative_addr - GIC_DIST_IPRIORITYR0) / 4;
-            distributor->gicd_interrupt_priority_regs[reg_num] = *val;
+            // Windows writes one byte per INTID: merge into its lane.
+            distributor->gicd_interrupt_priority_regs[reg_num] =
+                hv_vgic_diag_priority_word_write(distributor->gicd_interrupt_priority_regs[reg_num],
+                                                 relative_addr & 3, width, *val);
             vgic_log("HV vGIC DEBUG [INFO] [Distributor]: interrupt priority register %d = 0x%llx\n", reg_num, *val);
             register_handled = true;
             //unimplemented_reg_accessed = true;
@@ -1056,7 +1059,8 @@ static bool handle_vgic_dist_access(struct exc_info *ctx, u64 addr, u64 *val, bo
         else if ( (register_handled == false) && (relative_addr >= GIC_DIST_IPRIORITYR0) && (relative_addr <= GIC_DIST_IPRIORITYR254) ) {
             u32 reg_num;
             reg_num = (relative_addr - GIC_DIST_IPRIORITYR0) / 4;
-            *val = distributor->gicd_interrupt_priority_regs[reg_num];
+            *val = hv_vgic_diag_priority_word_read(distributor->gicd_interrupt_priority_regs[reg_num],
+                                                   relative_addr & 3, width);
             vgic_log("HV vGIC DEBUG [INFO] [Distributor]: interrupt priority register %d = 0x%llx\n", reg_num, *val);
             register_handled = true;
         }
@@ -1549,28 +1553,20 @@ static bool handle_vgic_redist_access(struct exc_info *ctx, u64 addr, u64 *val, 
                 reg_num = (relative_addr - GIC_REDIST_IPRIORITYR0) / 4;
                 reg_offset = (relative_addr - GIC_REDIST_IPRIORITYR0) % 4;
 
-                if(reg_offset == 0)
-                    redistributors[cpu_num].sgi_region.gicr_sgi_ipriority_reg[reg_num] = *val;
-                else{
-                    //TODO: handle width
-                    u8 *reg_u8 = (u8 *)&redistributors[cpu_num].sgi_region.gicr_sgi_ipriority_reg[reg_num];
-                    reg_u8 += reg_offset;
-                    *reg_u8 = *val & 0xFF;
-                }
+                redistributors[cpu_num].sgi_region.gicr_sgi_ipriority_reg[reg_num] =
+                    hv_vgic_diag_priority_word_write(
+                        redistributors[cpu_num].sgi_region.gicr_sgi_ipriority_reg[reg_num],
+                        reg_offset, width, *val);
                 register_handled = true;
                 break;
             case GIC_REDIST_IPRIORITYR4 ... GIC_REDIST_IPRIORITYR7 + 3:
                 // u32 reg_num;
                 reg_num = (relative_addr - GIC_REDIST_IPRIORITYR4) / 4;
                 reg_offset = (relative_addr - GIC_REDIST_IPRIORITYR4) % 4;
-                if(reg_offset == 0)
-                    redistributors[cpu_num].sgi_region.gicr_ppi_ipriority_reg[reg_num] = *val;
-                else{
-                    //TODO: handle width
-                    u8 *reg_u8 = (u8 *)&redistributors[cpu_num].sgi_region.gicr_ppi_ipriority_reg[reg_num];
-                    reg_u8 += reg_offset;
-                    *reg_u8 = *val & 0xFF;
-                }
+                redistributors[cpu_num].sgi_region.gicr_ppi_ipriority_reg[reg_num] =
+                    hv_vgic_diag_priority_word_write(
+                        redistributors[cpu_num].sgi_region.gicr_ppi_ipriority_reg[reg_num],
+                        reg_offset, width, *val);
                 register_handled = true;
                 break;
             default:
@@ -1693,14 +1689,9 @@ static bool handle_vgic_redist_access(struct exc_info *ctx, u64 addr, u64 *val, 
                 reg_num = (relative_addr - GIC_REDIST_IPRIORITYR0) / 4;
                 reg_offset = (relative_addr - GIC_REDIST_IPRIORITYR0) % 4;
 
-                if(reg_offset == 0)
-                    *val = redistributors[cpu_num].sgi_region.gicr_sgi_ipriority_reg[reg_num];
-                else{
-                    //TODO: handle width
-                    u8 *reg_u8 = (u8 *)&redistributors[cpu_num].sgi_region.gicr_sgi_ipriority_reg[reg_num];
-                    reg_u8 += reg_offset;
-                    *val = *reg_u8;
-                }
+                *val = hv_vgic_diag_priority_word_read(
+                    redistributors[cpu_num].sgi_region.gicr_sgi_ipriority_reg[reg_num],
+                    reg_offset, width);
                 register_handled = true;
                 break;
             case GIC_REDIST_IPRIORITYR4 ... GIC_REDIST_IPRIORITYR7 + 3:
@@ -1716,14 +1707,9 @@ static bool handle_vgic_redist_access(struct exc_info *ctx, u64 addr, u64 *val, 
                 // timer PPI (INTID 17) ended up priority 0, which the injected LR then
                 // carried, and the HAL bugchecked 0xC8 IRQL_UNEXPECTED_VALUE.
                 //
-                if(reg_offset == 0)
-                    *val = redistributors[cpu_num].sgi_region.gicr_ppi_ipriority_reg[reg_num];
-                else{
-                    //TODO: handle width
-                    u8 *reg_u8 = (u8 *)&redistributors[cpu_num].sgi_region.gicr_ppi_ipriority_reg[reg_num];
-                    reg_u8 += reg_offset;
-                    *val = *reg_u8;
-                }
+                *val = hv_vgic_diag_priority_word_read(
+                    redistributors[cpu_num].sgi_region.gicr_ppi_ipriority_reg[reg_num],
+                    reg_offset, width);
                 register_handled = true;
                 break;
             default:
@@ -1988,10 +1974,15 @@ u8 hv_vgic3_get_priority_cpu(u64 intd, int cpu){
         reg_offset = (intd - 16) % 4;
         reg_val = (u8 *)&redistributors[cpu].sgi_region.gicr_ppi_ipriority_reg[reg_num];
     }
+    else if(intd < 1020){
+        // GICD_IPRIORITYR<n> holds INTIDs 4n..4n+3 counted from INTID 0, exactly as the
+        // distributor write handler stores them.  Indexing SPIs from INTID 32 gave every
+        // SPI another line's priority (EXP1898: vINTID 889 read 0x00 instead of 0x60).
+        return hv_vgic_diag_spi_priority(distributor->gicd_interrupt_priority_regs, intd);
+    }
     else{
-        reg_num = (intd - 32) / 4;
-        reg_offset = (intd - 32) % 4;
-        reg_val = (u8 *)&distributor->gicd_interrupt_priority_regs[reg_num];
+        // Special INTIDs have no priority register: report the idle priority.
+        return 0xff;
     }
     reg_val += reg_offset;
 

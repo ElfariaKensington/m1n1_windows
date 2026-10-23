@@ -116,3 +116,35 @@ bool hv_vgic_diag_should_log_route_transition(u32 transition_count)
 
     return !(transition_count & (transition_count - 1));
 }
+
+/*
+ * IPRIORITYR registers hold one priority byte per INTID and Windows writes them with
+ * single-byte stores.  Merge an access of 1 << width_log2 bytes at byte_offset into the
+ * 32-bit register; bytes beyond it belong to the next register.
+ */
+u32 hv_vgic_diag_priority_word_write(u32 word, u32 byte_offset, u32 width_log2, u64 val)
+{
+    u32 bytes = 1u << width_log2;
+
+    for (u32 i = 0; i < bytes && byte_offset + i < 4; i++) {
+        u32 shift = 8 * (byte_offset + i);
+        word = (word & ~(0xffu << shift)) | ((u32)((val >> (8 * i)) & 0xff) << shift);
+    }
+    return word;
+}
+
+u64 hv_vgic_diag_priority_word_read(u32 word, u32 byte_offset, u32 width_log2)
+{
+    u32 bytes = 1u << width_log2;
+    u64 val = 0;
+
+    for (u32 i = 0; i < bytes && byte_offset + i < 4; i++)
+        val |= (u64)((word >> (8 * (byte_offset + i))) & 0xff) << (8 * i);
+    return val;
+}
+
+/* GICD_IPRIORITYR<n> holds INTIDs 4n..4n+3, counted from INTID 0. */
+u32 hv_vgic_diag_spi_priority(const u32 *regs, u32 intid)
+{
+    return (regs[intid / 4] >> (8 * (intid % 4))) & 0xff;
+}

@@ -178,6 +178,47 @@ static void test_priority_is_masked_by_pmr_and_running_priority(void)
     assert(!hv_vgic_diag_priority_deliverable(0x80, 0xf0, 0x80));
 }
 
+static void test_priority_register_byte_lanes(void)
+{
+    /* Windows programs GICD/GICR_IPRIORITYR one byte per INTID (strb). */
+    uint32_t word = 0x80808080;
+
+    word = hv_vgic_diag_priority_word_write(word, 1, 0, 0x50);
+    assert(word == 0x80805080);
+    word = hv_vgic_diag_priority_word_write(word, 0, 0, 0x60);
+    assert(word == 0x80805060);
+    word = hv_vgic_diag_priority_word_write(word, 2, 1, 0x1234);
+    assert(word == 0x12345060);
+    word = hv_vgic_diag_priority_word_write(word, 0, 2, 0xa0b0c0d0);
+    assert(word == 0xa0b0c0d0);
+    /* The upper half of a 64-bit access belongs to the next register. */
+    word = hv_vgic_diag_priority_word_write(word, 0, 3, 0x1122334455667788ULL);
+    assert(word == 0x55667788);
+
+    assert(hv_vgic_diag_priority_word_read(0x12345060, 1, 0) == 0x50);
+    assert(hv_vgic_diag_priority_word_read(0x12345060, 2, 1) == 0x1234);
+    assert(hv_vgic_diag_priority_word_read(0x12345060, 0, 2) == 0x12345060);
+}
+
+static void test_spi_priority_is_indexed_from_intid_zero(void)
+{
+    /*
+     * EXP1898: GICD_IPRIORITYR<n> holds INTIDs 4n..4n+3.  Reading SPIs at (intid-32)/4
+     * gave vINTID 889 (IRQL 9, 0x60) the byte of INTID 857 (0x00) and let it preempt
+     * everything, then block every interrupt on CPU0 while ACTIVE.
+     */
+    uint32_t regs[255] = {0};
+
+    regs[857 / 4] = hv_vgic_diag_priority_word_write(regs[857 / 4], 857 % 4, 0, 0x50);
+    regs[889 / 4] = hv_vgic_diag_priority_word_write(regs[889 / 4], 889 % 4, 0, 0x60);
+    regs[64 / 4] = hv_vgic_diag_priority_word_write(regs[64 / 4], 64 % 4, 0, 0x70);
+
+    assert(hv_vgic_diag_spi_priority(regs, 857) == 0x50);
+    assert(hv_vgic_diag_spi_priority(regs, 889) == 0x60);
+    assert(hv_vgic_diag_spi_priority(regs, 64) == 0x70);
+    assert(hv_vgic_diag_spi_priority(regs, 65) == 0x00);
+}
+
 static void test_recovery_wake_respects_running_priority(void)
 {
     const uint64_t pending = 1ULL << 62;
@@ -215,6 +256,8 @@ int main(void)
     test_level_sync_covers_every_lr_state();
     test_priority_is_masked_by_pmr_and_running_priority();
     test_recovery_wake_respects_running_priority();
+    test_priority_register_byte_lanes();
+    test_spi_priority_is_indexed_from_intid_zero();
     test_route_transition_logging_is_bounded_but_keeps_landmarks();
     puts("hv_vgic_diag_test: ok");
     return 0;
