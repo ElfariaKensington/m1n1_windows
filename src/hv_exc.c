@@ -2108,9 +2108,9 @@ void hv_exc_irq(struct exc_info *ctx)
         );
     }
     else{
-        virq_t pending = { 
+        virq_t pending = {
             .vintid = vintid,
-            .priority = 0x40, 
+            .priority = hv_vgic3_get_priority(vintid),
             .active = false, 
             .pending = true,
             .hw_status = false,
