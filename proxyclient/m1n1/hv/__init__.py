@@ -15,6 +15,7 @@ from .gdbserver import *
 from .types import *
 from .virtutils import *
 from .virtio import *
+from .guest_memory import expanded_ram_base
 
 __all__ = ["HV"]
 
@@ -2099,7 +2100,15 @@ class HV(Reloadable):
         self.p.hv_set_time_stealing(False)
 
 
-    def load_raw(self, image, entryoffset=0x800, use_xnu_symbols=False, vmin=0):
+    def load_raw(self, image, entryoffset=0x800, use_xnu_symbols=False, vmin=0,
+                 *, memory_base=None):
+        # Mu's FD/ADT addresses remain tied to heap_top, while its RAM HOB may
+        # start earlier. Validate before any guest write or stage-2 mutation.
+        phys_base = self.u.heap_top
+        if memory_base is not None:
+            phys_base = expanded_ram_base(self.u, memory_base)
+            if self.p.heapblock_alloc(0) > self.u.heap.offset:
+                raise ValueError("native heap has crossed into the proxy heap")
         sepfw_start, sepfw_length = self.u.adt["chosen"]["memory-map"].SEPFW
         tc_start, tc_size = self.u.adt["chosen"]["memory-map"].TrustCache
         if hasattr(self.u.adt["chosen"]["memory-map"], "preoslog"):
@@ -2118,7 +2127,8 @@ class HV(Reloadable):
 
         print(f"Total region size: 0x{image_size:x} bytes")
 
-        self.phys_base = phys_base = guest_base = self.u.heap_top
+        self.phys_base = phys_base
+        guest_base = self.u.heap_top
         self.ram_base = self.phys_base & ~0xffffffff
         self.ram_size = self.u.ba.mem_size_actual
         guest_base += 16 << 20 # ensure guest starts within a 16MB aligned region of mapped RAM
@@ -2129,6 +2139,8 @@ class HV(Reloadable):
         self.guest_base = guest_base
         mem_top = self.u.ba.phys_base + self.u.ba.mem_size
         mem_size = mem_top - phys_base
+        if memory_base is not None and guest_base + image_size > mem_top:
+            raise ValueError("guest boot inputs exceed platform RAM")
 
         print(f"Physical memory: 0x{phys_base:x} .. 0x{mem_top:x}")
         print(f"Guest region start: 0x{guest_base:x}")
