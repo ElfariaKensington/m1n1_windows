@@ -38,3 +38,25 @@ bool hv_agx_retained_backing_allowed(const struct hv_contract_snapshot *s,
     }
     return guest_region;
 }
+
+bool hv_agx_retained_ram_valid(const struct hv_contract_snapshot *s,
+    uint64_t host_end, uint64_t platform_end, uint64_t firmware_entry)
+{
+    if (!s || !s->region_count || s->region_count > HV_CONTRACT_MAX_REGIONS ||
+        !s->boot.ram_size || (s->boot.ram_base | s->boot.ram_size) & 0x3fff ||
+        s->boot.ram_base < host_end || s->boot.ram_base >= platform_end ||
+        s->boot.ram_size > platform_end - s->boot.ram_base ||
+        s->boot.guest_entry != firmware_entry || firmware_entry < s->boot.ram_base ||
+        firmware_entry - s->boot.ram_base >= s->boot.ram_size)
+        return false;
+    unsigned ram_regions = 0;
+    for (unsigned i = 0; i < s->region_count; ++i) {
+        const struct hv_contract_region *r = &s->regions[i];
+        if (r->kind == HV_CONTRACT_REGION_GUEST_RAM) {
+            if (r->flags || r->base != s->boot.ram_base || r->size != s->boot.ram_size)
+                return false;
+            ++ram_regions;
+        }
+    }
+    return ram_regions == 1;
+}

@@ -11,6 +11,7 @@
 #include "hv_agx_g2.generated.h"
 #include "adt.h"
 #include "firmware.h"
+#include "heapblock.h"
 #include "../../drivers/apple-agx/shared/include/apple_agx_hwdata_profile.h"
 #include "utils.h"
 #include "xnuboot.h"
@@ -455,8 +456,13 @@ bool hv_agx_retained_platform_init(u64 root, u64 length)
     if (node < 0 || adt_get_reg(adt,path,"reg",0,&asc_base,&size) < 0 || size < 0x48)
         return false;
     root_base = root; root_length = length;
-    launch_memory_valid = hv_launch_j313_capture_base(HV_CONTRACT_PRE_HV_INIT,1,&launch_memory) &&
-        launch_memory.boot.ram_base == J313_AUTONOMOUS_LAYOUT.phys_base;
+    /* Assisted launches may reclaim the unused gap below the fixed FD.
+     * The launcher also excludes its proxy heap and new ADT carveouts. */
+    launch_memory_valid = cur_boot_args.mem_size <= UINT64_MAX - cur_boot_args.phys_base &&
+        hv_launch_j313_capture_base(HV_CONTRACT_PRE_HV_INIT,1,&launch_memory) &&
+        hv_agx_retained_ram_valid(&launch_memory, (u64)heapblock_alloc(0),
+                                 cur_boot_args.phys_base + cur_boot_args.mem_size,
+                                 J313_AUTONOMOUS_LAYOUT.firmware_base);
     if (!launch_memory_valid) return false;
     printf("HV: retained backing guest RAM=0x%llx..0x%llx reserved regions=%u\n",
            (unsigned long long)launch_memory.boot.ram_base,

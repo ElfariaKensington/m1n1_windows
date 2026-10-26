@@ -7,6 +7,7 @@ trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
 cc=${CC:-cc}
 
 all_tests="
+hv_agx_retained_ram_test
 afk_raw_router_test
 afk_command_test
 afk_command_owner_test
@@ -122,6 +123,9 @@ for name in "$@"; do
     definitions=""
     sources="tests/$name.c"
     case "$name" in
+        hv_agx_retained_ram_test)
+            sources="$sources src/hv_agx_retained_backing.c"
+            ;;
         afk_raw_router_test)
             definitions="-DAFK_RAW_ROUTER_HOST_TEST"
             sources="$sources src/afk_raw_router.c"
