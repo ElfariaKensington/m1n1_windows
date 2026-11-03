@@ -60,7 +60,7 @@ struct hv_agx_gpuva_v5_ops {
 
 struct hv_agx_gpuva_v5_process {
     uint64_t identity, generation, root_pa, root_generation, map_generation;
-    bool live, paging;
+    bool live, paging, live_additive;
 };
 struct hv_agx_gpuva_v5_table {
     uint64_t ipa, pa;
@@ -119,6 +119,13 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_init(
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_configure_local(
     struct hv_agx_gpuva_v5 *, uint64_t base, uint64_t bytes,
     uint64_t private_bytes);
+struct _AGX_GPUVA_V5_REQUEST;
+struct _AGX_GPUVA_V5_RESPONSE;
+/* Optional v6 capability query and per-owner negotiation. */
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_extension(
+    struct hv_agx_gpuva_v5 *, const struct _AGX_GPUVA_V5_REQUEST *,
+    struct _AGX_GPUVA_V5_RESPONSE *);
+
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_verify(struct hv_agx_gpuva_v5 *);
 enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_validate_envelope(
     const struct hv_agx_gpuva_v5 *, uint64_t epoch, unsigned command,

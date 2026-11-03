@@ -210,7 +210,8 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_validate_envelope(
     if (!b || !b->active || b->tainted) return HV_AGX_GPUVA_V5_TAINTED;
     if (epoch != b->epoch) return HV_AGX_GPUVA_V5_STALE;
     if (command < AGX_GPUVA_V5_CREATE ||
-        command > AGX_GPUVA_V5_ATTACH_MAILBOX)
+        command > AGX_GPUVA_V5_NEGOTIATE_LIVE ||
+        command == AGX_GPUVA_V5_REGISTER_SYSMEM_BACKING)
         return HV_AGX_GPUVA_V5_INVALID;
     if (command == AGX_GPUVA_V5_CREATE ? flags > 1u :
         command == AGX_GPUVA_V5_UPDATE_LEAF ?
@@ -226,6 +227,44 @@ static int process_index(struct hv_agx_gpuva_v5 *b, uint64_t id, uint64_t genera
         if (b->processes[i].live && b->processes[i].identity == id &&
             b->processes[i].generation == generation) return (int)i;
     return -1;
+}
+
+/* Negotiation is tied to the same process generation as its owned graph.
+ * No protocol version change: old clients never enable this extension. */
+enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_extension(
+    struct hv_agx_gpuva_v5 *b, const AGX_GPUVA_V5_REQUEST *q,
+    AGX_GPUVA_V5_RESPONSE *r)
+{
+    int owner;
+    unsigned slot;
+    enum hv_agx_gpuva_v5_result result = check(b);
+    if (result) return result;
+    if (!q || !r) return HV_AGX_GPUVA_V5_INVALID;
+    result = hv_agx_gpuva_v5_validate_envelope(b, q->Epoch, q->Command, q->Flags);
+    if (result) return result;
+    if (q->TableIpa || q->AuxIpa || q->Slot || q->Index || q->ValidMask ||
+        q->WritableMask || q->LogicalIpa[0] || q->LogicalIpa[1] ||
+        q->LogicalIpa[2] || q->LogicalIpa[3]) return HV_AGX_GPUVA_V5_INVALID;
+    if (q->Command == AGX_GPUVA_V5_QUERY_CAPS) {
+        if (q->ProcessId || q->ProcessGeneration || q->Token ||
+            q->AllocationGeneration) return HV_AGX_GPUVA_V5_INVALID;
+        r->Reserved[0] = AGX_GPUVA_V5_CAP_LIVE_ADDITIVE;
+        r->Reserved[1] = AGX_GPUVA_V5_LIVE_ABI;
+        return HV_AGX_GPUVA_V5_OK;
+    }
+    if (q->Command != AGX_GPUVA_V5_NEGOTIATE_LIVE ||
+        q->AllocationGeneration != AGX_GPUVA_V5_LIVE_ABI ||
+        (q->Token != 0 && q->Token != AGX_GPUVA_V5_CAP_LIVE_ADDITIVE))
+        return HV_AGX_GPUVA_V5_INVALID;
+    owner = process_index(b, q->ProcessId, q->ProcessGeneration);
+    if (owner < 0) return HV_AGX_GPUVA_V5_STALE;
+    for (slot = 1; slot < HV_AGX_GPUVA_V5_SLOTS; ++slot)
+        if (b->slots[slot].occupied && b->slots[slot].owner == (unsigned)owner &&
+            b->slots[slot].jobs) return HV_AGX_GPUVA_V5_BUSY;
+    b->processes[owner].live_additive = q->Token != 0;
+    r->Reserved[0] = q->Token;
+    r->Reserved[1] = AGX_GPUVA_V5_LIVE_ABI;
+    return HV_AGX_GPUVA_V5_OK;
 }
 
 static int table_index(struct hv_agx_gpuva_v5 *b, unsigned owner, uint64_t ipa,
@@ -302,9 +341,16 @@ static enum hv_agx_gpuva_v5_result publish_entry(struct hv_agx_gpuva_v5 *b,
 {
     uint64_t old = *entry;
     unsigned slot;
+    bool live = false;
     for (slot = 1; slot < HV_AGX_GPUVA_V5_SLOTS; ++slot)
         if (b->slots[slot].occupied && b->slots[slot].owner == owner &&
-            b->slots[slot].jobs) return HV_AGX_GPUVA_V5_BUSY;
+            b->slots[slot].jobs) live = true;
+    /* The native descriptor, not a logical 4-KiB sub-entry, proves freshness.
+     * Callers already checked the owned child/full leaf and backing grant. */
+    if (live && (!b->processes[owner].live_additive || old || !descriptor))
+        return HV_AGX_GPUVA_V5_BUSY;
+    if (b->processes[owner].map_generation == UINT64_MAX)
+        return HV_AGX_GPUVA_V5_CAPACITY;
     *entry = descriptor;
     if (!b->ops.sync_tables(b->ops.context)) goto rollback;
     for (slot = 1; slot < HV_AGX_GPUVA_V5_SLOTS; ++slot)
@@ -314,6 +360,9 @@ static enum hv_agx_gpuva_v5_result publish_entry(struct hv_agx_gpuva_v5 *b,
     ++b->processes[owner].map_generation;
     return HV_AGX_GPUVA_V5_OK;
 rollback:
+    /* A live GPU may have observed the temporary entry. Even a successful
+     * rollback cannot authorize reuse or paging-fence success. */
+    if (live) b->tainted = true;
     *entry = old;
     if (!b->ops.sync_tables(b->ops.context)) b->tainted = true;
     for (slot = 1; slot < HV_AGX_GPUVA_V5_SLOTS; ++slot)
@@ -438,7 +487,7 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_create(
             if (result) return result;
             b->processes[i] = (struct hv_agx_gpuva_v5_process){
                 id, generation, b->tables[table_index(b, i, root_ipa, 0)].pa,
-                1, 0, true, paging};
+                1, 0, true, paging, false};
             return HV_AGX_GPUVA_V5_OK;
         }
     return HV_AGX_GPUVA_V5_CAPACITY;
@@ -820,7 +869,8 @@ enum hv_agx_gpuva_v5_result hv_agx_gpuva_v5_flush_tlb(
         return HV_AGX_GPUVA_V5_INVALID;
     for (slot = 1; slot < HV_AGX_GPUVA_V5_SLOTS; ++slot)
         if (b->slots[slot].occupied && b->slots[slot].owner == (unsigned)owner &&
-            b->slots[slot].jobs) return HV_AGX_GPUVA_V5_BUSY;
+            b->slots[slot].jobs && !b->processes[owner].live_additive)
+            return HV_AGX_GPUVA_V5_BUSY;
     if (!b->ops.sync_tables(b->ops.context)) {
         b->tainted = true;
         return HV_AGX_GPUVA_V5_TLB;

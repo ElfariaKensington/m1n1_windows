@@ -444,7 +444,7 @@ static void mailbox_ownership(void)
     assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 7,
            AGX_GPUVA_V5_ATTACH_MAILBOX, 1) == HV_AGX_GPUVA_V5_INVALID);
     assert(hv_agx_gpuva_v5_validate_envelope(&f->broker, 7,
-           AGX_GPUVA_V5_ATTACH_MAILBOX + 1, 0) == HV_AGX_GPUVA_V5_INVALID);
+           AGX_GPUVA_V5_NEGOTIATE_LIVE + 1, 0) == HV_AGX_GPUVA_V5_INVALID);
     /* A live table or backing page can never become the response page. */
     assert(hv_agx_gpuva_v5_attach_mailbox(&f->broker, P_L2, &pa) ==
            HV_AGX_GPUVA_V5_OWNERSHIP && pa == 1);

@@ -24,7 +24,7 @@ bool hv_agx_gpuva_v5_mmio(struct hv_agx_gpuva_v5_wire *s, uint64_t offset,
         if (q.Version == AGX_GPUVA_V5_VERSION && q.Bytes == sizeof(q) &&
             q.Sequence && q.Sequence > s->last_sequence &&
             q.Command >= AGX_GPUVA_V5_CREATE &&
-            q.Command <= AGX_GPUVA_V5_ATTACH_MAILBOX && execute) {
+            q.Command <= AGX_GPUVA_V5_NEGOTIATE_LIVE && execute) {
             s->last_sequence = q.Sequence;
             execute(context, &q, &r);
         }

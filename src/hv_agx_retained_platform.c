@@ -172,6 +172,10 @@ static void gpuva_execute(void *context, const AGX_GPUVA_V5_REQUEST *q,
         &gpuva_v5, q->Epoch, q->Command, q->Flags);
     if (result != HV_AGX_GPUVA_V5_OK) goto done;
     switch (q->Command) {
+    case AGX_GPUVA_V5_QUERY_CAPS:
+    case AGX_GPUVA_V5_NEGOTIATE_LIVE:
+        result = hv_agx_gpuva_v5_extension(&gpuva_v5, q, r);
+        break;
     case AGX_GPUVA_V5_CREATE:
         result = hv_agx_gpuva_v5_create(&gpuva_v5,q->ProcessId,
             q->ProcessGeneration,q->TableIpa,q->Flags != 0);
