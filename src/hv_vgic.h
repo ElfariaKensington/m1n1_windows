@@ -586,7 +586,7 @@ typedef struct vgicv3_its_region {
 
 /* vGIC */
 
-void hv_vgicv3_init(void);
+bool hv_vgicv3_init(void);
 
 void hv_vgicv3_init_dist_registers(void);
 

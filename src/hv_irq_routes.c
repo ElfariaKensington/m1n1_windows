@@ -18,6 +18,7 @@ static const struct hv_agx_g2_interrupt_route agx_g2_routes[] =
 
 static struct hv_irq_route dynamic_routes[HV_IRQ_DYNAMIC_ROUTE_CAPACITY];
 static size_t dynamic_route_count;
+static size_t static_route_count;
 
 _Static_assert(sizeof(agx_g2_routes) / sizeof(agx_g2_routes[0]) ==
                    HV_AGX_G2_INTERRUPT_ROUTE_COUNT,
@@ -25,14 +26,14 @@ _Static_assert(sizeof(agx_g2_routes) / sizeof(agx_g2_routes[0]) ==
 
 size_t hv_irq_route_count(void)
 {
-    return STATIC_ROUTE_COUNT + dynamic_route_count;
+    return static_route_count + dynamic_route_count;
 }
 
 const struct hv_irq_route *hv_irq_route_at(size_t index)
 {
-    if (index < STATIC_ROUTE_COUNT)
+    if (index < static_route_count)
         return &routes[index];
-    index -= STATIC_ROUTE_COUNT;
+    index -= static_route_count;
     if (index >= dynamic_route_count)
         return NULL;
     return &dynamic_routes[index];
@@ -108,7 +109,8 @@ bool hv_irq_routes_register_agx_g2(void)
     return true;
 }
 
-void hv_irq_routes_reset_dynamic(void)
+void hv_irq_routes_reset(bool enable_j313_routes)
 {
+    static_route_count = enable_j313_routes ? STATIC_ROUTE_COUNT : 0;
     dynamic_route_count = 0;
 }

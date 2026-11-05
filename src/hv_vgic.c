@@ -26,6 +26,7 @@
 #include "hv_vgic.h"
 #include "hv_vgic_diag.h"
 #include "hv_vgic_redist.h"
+#include "adt.h"
 #include "assert.h"
 #include "cpu_regs.h"
 #include "display.h"
@@ -215,6 +216,9 @@ static bool handle_j313_xhci_mmio(struct exc_info *ctx, u64 addr, u64 *val, bool
 
 bool hv_vgic_rearm_j313_xhci_trace(void)
 {
+    if (!adt_is_compatible(adt, 0, "J313AP"))
+        return false;
+
     memset(&j313_xhci_caps, 0, sizeof(j313_xhci_caps));
     memset(&j313_xhci_dma_trace, 0, sizeof(j313_xhci_dma_trace));
 
@@ -657,7 +661,9 @@ static bool handle_vgic_dist_access(struct exc_info *ctx, u64 addr, u64 *val, bo
 
                     const struct hv_irq_route *route = hv_irq_route_from_vintid(irq_num);
                     if (route) {
-                        if (route->hw_irq == 857) {
+                        bool j313_xhci = route->hw_irq == 857 &&
+                                         adt_is_compatible(adt, 0, "J313AP");
+                        if (j313_xhci) {
                             hv_prepare_j313_xhci_handoff();
                             hv_prepare_j313_xhci_darts();
                             j313_xhci_tick_trace_budget = 24;
@@ -670,7 +676,7 @@ static bool handle_vgic_dist_access(struct exc_info *ctx, u64 addr, u64 *val, bo
                             printf("HV: IRQ route enabled vINTID=%u AIC=%u count=%u\n",
                                    route->vintid, route->hw_irq, transition);
                         hv_vgic3_trace_intid(route->vintid, 48);
-                        if (route->hw_irq == 857)
+                        if (j313_xhci)
                             hv_trace_j313_xhci("route-enable");
                     }
                 }
@@ -2365,13 +2371,10 @@ u64 hv_vgic3_get_igrpen1(void){
  * 
  * Note that this function is only expected to be called once.
  * 
- * @return 
- * 
- * 0 - success, vGIC is ready for use by the guest
- * -1 - an error has occurred during vGIC initialization, refer to m1n1 output log for details on the specific error 
+ * @return true when the guest interrupt controller is ready.
  */
 
-void hv_vgicv3_init(void)
+bool hv_vgicv3_init(void)
 {
 #ifdef ENABLE_VGIC_MODULE
     printf("HV vGIC DEBUG: start\n");
@@ -2398,11 +2401,25 @@ void hv_vgicv3_init(void)
         //     redist_base = REDIST_BASE_36_BIT;
         //     its_base = ITS_BASE_36_BIT;
         //     break;
-        case T6000:
+        case T6000: {
+            u64 mpidrs[HV_VGIC_T6000_CPU_COUNT];
+            for (u32 cpu = 0; cpu < HV_VGIC_T6000_CPU_COUNT; cpu++) {
+                if ((int)cpu != boot_cpu_idx && !smp_is_alive(cpu)) {
+                    printf("HV vGIC: T6000 CPU %u did not start\n", cpu);
+                    return false;
+                }
+                mpidrs[cpu] = smp_get_mpidr(cpu);
+            }
+            if (!hv_vgic_t6000_topology_matches(mpidrs, HV_VGIC_T6000_CPU_COUNT)) {
+                printf("HV vGIC: unexpected T6000 CPU topology\n");
+                return false;
+            }
             dist_base = DIST_BASE_42_BIT;
             redist_base = REDIST_BASE_42_BIT;
             its_base = ITS_BASE_42_BIT;
-            num_cpus = 8; // cannot assume that we have 10 cores for M1 Pro
+            num_cpus = HV_VGIC_T6000_CPU_COUNT;
+            break;
+        }
         case T6001:
             dist_base = DIST_BASE_42_BIT;
             redist_base = REDIST_BASE_42_BIT;
@@ -2469,12 +2486,12 @@ void hv_vgicv3_init(void)
     hv_map_hook(its_base, handle_vgic_its_access, 0x10000);
 
     //vGIC setup is complete.
-    if (chip_id == T8103)
+    if (adt_is_compatible(adt, 0, "J313AP"))
         hv_vgic_rearm_j313_xhci_trace();
     vgic_inited = true;
-    return;
+    return true;
 #else
     printf("HV vGIC DEBUG: Disabled\n");
-    return;
+    return false;
 #endif //ENABLE_VGIC_MODULE
 }

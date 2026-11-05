@@ -18,7 +18,7 @@ static void test_agx_g2_routes_and_apple_input_capacity(void)
         {.hw_irq = 577, .vintid = 888, .level = true},
     };
 
-    hv_irq_routes_reset_dynamic();
+    hv_irq_routes_reset(true);
     assert(hv_irq_routes_register_agx_g2());
     assert(hv_irq_route_count() == 1 + sizeof(expected) / sizeof(expected[0]));
 
@@ -53,7 +53,14 @@ int main(void)
     u32 hw_irq = 0;
     u32 vintid = 0;
 
-    hv_irq_routes_reset_dynamic();
+    hv_irq_routes_reset(false);
+    assert(hv_irq_route_count() == 0);
+    assert(hv_irq_route_from_hw(857) == NULL);
+    assert(hv_irq_route_from_vintid(857) == NULL);
+    assert(hv_irq_route_register(333, 865, true));
+    assert(hv_irq_route_at(0)->hw_irq == 333);
+
+    hv_irq_routes_reset(true);
 
     route = hv_irq_route_from_hw(857);
     assert(route != NULL);
@@ -103,7 +110,7 @@ int main(void)
     assert(!hv_irq_route_register(700, 900, true));
     assert(hv_irq_route_count() == 1 + HV_IRQ_DYNAMIC_ROUTE_CAPACITY);
 
-    hv_irq_routes_reset_dynamic();
+    hv_irq_routes_reset(true);
     assert(hv_irq_route_count() == 1);
     assert(hv_irq_route_from_hw(333) == NULL);
 

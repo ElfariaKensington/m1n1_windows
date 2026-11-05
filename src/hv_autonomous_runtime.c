@@ -21,6 +21,7 @@
 #include "display.h"
 #include "memory.h"
 #include "minilzlib/minlzma.h"
+#include "soc.h"
 #include "string.h"
 #include "tinf/tinf.h"
 #include "types.h"
@@ -353,6 +354,11 @@ static bool runtime_stage(enum hv_autonomous_stage stage,
 
     switch (stage) {
         case HV_AUTONOMOUS_STAGE_VALIDATE: {
+            if (chip_id != T8103 || !adt_is_compatible(adt, 0, "J313AP")) {
+                printf("Standalone: J313 firmware requires a J313/T8103 Mac\n");
+                iodev_console_kick();
+                return false;
+            }
             if (!hv_autonomous_profile_decode(payload->flags, &runtime->profile) ||
                 payload->layout_version != layout->layout_version ||
                 payload->uncompressed_size > layout->firmware_max_size ||

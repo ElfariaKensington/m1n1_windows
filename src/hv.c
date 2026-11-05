@@ -173,27 +173,11 @@ static void hv_configure_guest_wfi(void)
     sysop("isb");
 }
 
-bool hv_init(void)
+static bool hv_prepare_j313_irq_routes(void)
 {
-    hv_diag_reset();
-    hv_diag_set_collector(hv_collect_diag, NULL);
-    hv_fb_stream_disable(&hv_framebuffer_stream);
-    pcie_shutdown();
-    // Make sure we wake up DCP if we put it to sleep, just quiesce it to match ADT
-    if (display_is_external && display_start_dcp() >= 0)
-        display_shutdown(DCP_QUIESCED);
-    // reenable hpm interrupts for the guest for unused iodevs
-    usb_hpm_restore_irqs(0);
-    bool secondaries_ready = smp_start_secondaries();
-    smp_set_wfe_mode(true);
-    hv_wdt_init();
-
-    hv_pt_init();
-
     /* Assisted and autonomous launches share this exact passthrough gate.
      * It only maps reviewed resources and routes the level interrupt; the
      * Windows driver remains the sole owner of SPI/GPIO programming. */
-    hv_irq_routes_reset_dynamic();
     if (!hv_irq_routes_register_agx_g2()) {
         printf("HV: AGX G2 interrupt route registration failed\n");
         return false;
@@ -212,6 +196,30 @@ bool hv_init(void)
                (u32)HV_APPLE_INPUT_PHYSICAL_PARENT_IRQ,
                (u32)HV_APPLE_INPUT_GUEST_VINTID);
 #endif
+    return true;
+}
+
+bool hv_init(void)
+{
+    hv_diag_reset();
+    hv_diag_set_collector(hv_collect_diag, NULL);
+    hv_fb_stream_disable(&hv_framebuffer_stream);
+    pcie_shutdown();
+    // Make sure we wake up DCP if we put it to sleep, just quiesce it to match ADT
+    if (display_is_external && display_start_dcp() >= 0)
+        display_shutdown(DCP_QUIESCED);
+    // reenable hpm interrupts for the guest for unused iodevs
+    usb_hpm_restore_irqs(0);
+    bool secondaries_ready = smp_start_secondaries();
+    smp_set_wfe_mode(true);
+    hv_wdt_init();
+
+    hv_pt_init();
+
+    bool j313 = adt_is_compatible(adt, 0, "J313AP");
+    hv_irq_routes_reset(j313);
+    if (j313 && !hv_prepare_j313_irq_routes())
+        return false;
 
     // Configure hypervisor defaults
 
@@ -264,7 +272,8 @@ bool hv_init(void)
     //
 
     //
-    hv_vgicv3_init();
+    if (!hv_vgicv3_init())
+        return false;
     init_vgic_irq_queues();
     //
 #endif
