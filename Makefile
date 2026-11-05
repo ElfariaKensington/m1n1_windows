@@ -60,6 +60,9 @@ BASE_CFLAGS := -O2 -Wall -g -Wundef -Werror=strict-prototypes -fno-common -fno-P
 CFLAGS := $(BASE_CFLAGS) -mgeneral-regs-only -I../drivers/apple-agx/shared/include
 
 CFG :=
+ifeq ($(J316S_SETUP),1)
+CFG += M1N1_J316S_SETUP
+endif
 ifeq ($(RELEASE),1)
 CFG += RELEASE
 endif
@@ -387,6 +390,10 @@ FP_OBJECTS := \
 	math/exp2f_data.o \
 	math/powf.o \
 	math/powf_data.o
+
+ifeq ($(J316S_SETUP),1)
+OBJECTS += hv_j316s_setup.o
+endif
 
 BUILD_OBJS := $(patsubst %,build/%,$(OBJECTS))
 BUILD_FP_OBJS := $(patsubst %,build/%,$(FP_OBJECTS))

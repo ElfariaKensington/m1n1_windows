@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 
+#include "../build/build_cfg.h"
 #include "hv.h"
 #include "hv_tick_policy.h"
 #include "hv_runtime_diag.h"
@@ -13,6 +14,9 @@
 #include "hv_guest_cpu_state.h"
 #include "hv_apple_input.h"
 #include "hv_irq_routes.h"
+#ifdef M1N1_J316S_SETUP
+#include "hv_j316s_setup.h"
+#endif
 #include "hv_nvme_queue.h"
 #include "hv_vgic.h"
 #include "memory.h"
@@ -41,6 +45,7 @@ static u64 hv_guest_irq_recovery_tick_interval;
 u64 hv_tick_arm_count[MAX_CPUS];
 u64 hv_recovery_tick_arm_count[MAX_CPUS];
 static bool hv_guest_runtime_ready;
+static bool hv_isolated_setup;
 u64 hv_secondary_tick_interval;
 
 int hv_pinned_cpu;
@@ -199,17 +204,20 @@ static bool hv_prepare_j313_irq_routes(void)
     return true;
 }
 
-bool hv_init(void)
+static bool hv_init_mode(bool isolated_setup)
 {
+    hv_isolated_setup = isolated_setup;
     hv_diag_reset();
     hv_diag_set_collector(hv_collect_diag, NULL);
     hv_fb_stream_disable(&hv_framebuffer_stream);
-    pcie_shutdown();
-    // Make sure we wake up DCP if we put it to sleep, just quiesce it to match ADT
-    if (display_is_external && display_start_dcp() >= 0)
-        display_shutdown(DCP_QUIESCED);
-    // reenable hpm interrupts for the guest for unused iodevs
-    usb_hpm_restore_irqs(0);
+    if (!isolated_setup) {
+        pcie_shutdown();
+        // Make sure we wake up DCP if we put it to sleep, just quiesce it to match ADT
+        if (display_is_external && display_start_dcp() >= 0)
+            display_shutdown(DCP_QUIESCED);
+        // reenable hpm interrupts for the guest for unused iodevs
+        usb_hpm_restore_irqs(0);
+    }
     bool secondaries_ready = smp_start_secondaries();
     smp_set_wfe_mode(true);
     hv_wdt_init();
@@ -312,6 +320,18 @@ bool hv_init(void)
     sysop("isb");
     return secondaries_ready;
 }
+
+bool hv_init(void)
+{
+    return hv_init_mode(false);
+}
+
+#ifdef M1N1_J316S_SETUP
+bool hv_init_j316s_setup(void)
+{
+    return adt_is_compatible(adt, 0, "J316sAP") && hv_init_mode(true);
+}
+#endif
 
 void hv_prepare_guest_cpu_state(void)
 {
@@ -421,14 +441,11 @@ void hv_start(void *entry, u64 regs[4])
     hv_want_cpu = -1;
     hv_cpus_in_guest = BIT(smp_id());
 
-    u64 adt_base;
-    if(chip_id == T8103 || chip_id == T8112)
-        adt_base = ADT_EL2_36_BIT;
-    else
-        adt_base = ADT_EL2_42_BIT;
-
-    //map the address of the (EL2) ADT to a fixed location so EL1 can patch it
-    hv_map_hw(adt_base, (u64)adt, ALIGN_UP(cur_boot_args.devtree_size, SZ_16K));
+    if (!hv_isolated_setup) {
+        u64 adt_base = chip_id == T8103 || chip_id == T8112 ? ADT_EL2_36_BIT : ADT_EL2_42_BIT;
+        // Map the EL2 ADT to a fixed location for the established guest path.
+        hv_map_hw(adt_base, (u64)adt, ALIGN_UP(cur_boot_args.devtree_size, SZ_16K));
+    }
 
     hv_enter_guest(regs[0], regs[1], regs[2], regs[3], entry);
 
@@ -1380,4 +1397,7 @@ void hv_tick(struct exc_info *ctx)
     }
     hv_vuart_poll();
     hv_fb_stream_tick(&hv_framebuffer_stream);
+#ifdef M1N1_J316S_SETUP
+    hv_j316s_setup_draw();
+#endif
 }

@@ -41,3 +41,19 @@ bool hv_stage2_state_snapshot(struct hv_stage2_mapping *out, size_t capacity, si
     *count = observed_count;
     return true;
 }
+
+bool hv_stage2_state_matches(const struct hv_stage2_mapping *expected, size_t count)
+{
+    if (!expected || observed_overflow || count != observed_count)
+        return false;
+
+    for (size_t index = 0; index < count; index++) {
+        const struct hv_stage2_mapping *actual = &observed[index];
+        const struct hv_stage2_mapping *allowed = &expected[index];
+        if (actual->ipa != allowed->ipa || actual->pa != allowed->pa ||
+            actual->size != allowed->size || actual->increment != allowed->increment ||
+            actual->kind != allowed->kind)
+            return false;
+    }
+    return true;
+}

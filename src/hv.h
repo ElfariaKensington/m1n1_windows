@@ -131,6 +131,9 @@ void hv_set_elr(u64 val);
 
 /* HV main */
 bool hv_init(void);
+#ifdef M1N1_J316S_SETUP
+bool hv_init_j316s_setup(void);
+#endif
 void hv_prepare_guest_cpu_state(void);
 void hv_start(void *entry, u64 regs[4]);
 void hv_start_secondary(int cpu, void *entry, u64 regs[4]);

@@ -22,6 +22,9 @@
 #include "memory.h"
 #include "nvme.h"
 #include "payload.h"
+#ifdef M1N1_J316S_SETUP
+#include "hv_j316s_setup.h"
+#endif
 #include "pcie.h"
 #include "pmgr.h"
 #include "proxy_boot_identity.h"
@@ -146,6 +149,14 @@ void run_actions(void)
 #endif
 
     printf("Checking for payloads...\n");
+
+#ifdef M1N1_J316S_SETUP
+    if (hv_j316s_setup_present()) {
+        if (hv_j316s_setup_run())
+            return;
+        goto proxy_fallback;
+    }
+#endif
 
     enum hv_stage_role stage_role = hv_stage_role_current();
     if (hv_stage_role_allows_bootstrap(stage_role)) {

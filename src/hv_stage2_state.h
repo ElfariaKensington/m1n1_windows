@@ -28,5 +28,6 @@ void hv_stage2_state_reset(void);
 bool hv_stage2_state_record(uint64_t ipa, uint64_t pa, uint64_t size, uint64_t increment,
                             uint32_t kind);
 bool hv_stage2_state_snapshot(struct hv_stage2_mapping *out, size_t capacity, size_t *count);
+bool hv_stage2_state_matches(const struct hv_stage2_mapping *expected, size_t count);
 
 #endif

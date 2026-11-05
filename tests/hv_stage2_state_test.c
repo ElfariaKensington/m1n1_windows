@@ -19,6 +19,14 @@ int main(void)
     assert(mappings[0].size == 0x200000);
     assert(mappings[0].increment == 1);
     assert(mappings[1].kind == HV_STAGE2_MAPPING_HOOK);
+    assert(hv_stage2_state_matches(mappings, count));
+    assert(!hv_stage2_state_matches(mappings, count - 1));
+    mappings[0].pa += 0x4000;
+    assert(!hv_stage2_state_matches(mappings, count));
+    mappings[0].pa -= 0x4000;
+    assert(hv_stage2_state_record(0x393cc0000ULL, 0x393cc0000ULL, 0x40000, 1,
+                                  HV_STAGE2_MAPPING_HARDWARE));
+    assert(!hv_stage2_state_matches(mappings, count));
 
     assert(!hv_stage2_state_snapshot(mappings, 1, &count));
     assert(!hv_stage2_state_record(0, 0, 0, 0, HV_STAGE2_MAPPING_UNMAP));
