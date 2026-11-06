@@ -121,7 +121,7 @@ struct dart_dev {
     u64 *l1[DART_MAX_TTBR_COUNT];
 };
 
-static void dart_t8020_tlb_invalidate(dart_dev_t *dart)
+static bool dart_t8020_flush_stream(dart_dev_t *dart)
 {
     write32(dart->regs + DART_T8020_STREAM_SELECT, BIT(dart->device));
 
@@ -129,7 +129,12 @@ static void dart_t8020_tlb_invalidate(dart_dev_t *dart)
     dma_wmb();
     write32(dart->regs + DART_T8020_STREAM_COMMAND, DART_T8020_STREAM_COMMAND_INVALIDATE);
 
-    if (poll32(dart->regs + DART_T8020_STREAM_COMMAND, DART_T8020_STREAM_COMMAND_BUSY, 0, 100))
+    return !poll32(dart->regs + DART_T8020_STREAM_COMMAND, DART_T8020_STREAM_COMMAND_BUSY, 0, 100);
+}
+
+static void dart_t8020_tlb_invalidate(dart_dev_t *dart)
+{
+    if (!dart_t8020_flush_stream(dart))
         printf("dart: DART_T8020_STREAM_COMMAND_BUSY did not clear.\n");
 }
 
@@ -569,6 +574,83 @@ int dart_map_flags(dart_dev_t *dart, uintptr_t iova, void *bfr, size_t len, u32 
 int dart_map(dart_dev_t *dart, uintptr_t iova, void *bfr, size_t len)
 {
     return dart_map_flags(dart, iova, bfr, len, 0);
+}
+
+/* The caller owns this DART and keeps the controller in reset during setup.
+ * Keep streams disabled after any failure, including partial allocation. */
+bool dart_t6000_map_exclusive(uintptr_t base, u8 stream, u64 iova, u64 pa, size_t size)
+{
+    const u64 iova_limit = 1ULL << 32;
+    const u64 pa_limit = (FIELD_GET(DART_T6000_PTE_OFFSET, DART_T6000_PTE_OFFSET) + 1ULL)
+                         << DART_PTE_OFFSET_SHIFT;
+    if (stream >= dart_t6000.sid_count || !size || iova >= iova_limit ||
+        size > iova_limit - iova || pa >= pa_limit || size > pa_limit - pa ||
+        ((iova | pa | size) & (SZ_16K - 1)) ||
+        (read32(base + DART_T8020_CONFIG) & DART_T8020_CONFIG_LOCK))
+        return false;
+
+    dart_dev_t *dart = calloc(1, sizeof(*dart));
+    if (!dart)
+        return false;
+    dart->regs = base;
+    dart->device = stream;
+    dart->type = DART_T6000;
+    dart->params = &dart_t6000;
+
+    write32(base + DART_T8020_ENABLED_STREAMS, 0);
+    for (u32 sid = 0; sid < dart_t6000.sid_count; sid++)
+        write32(base + DART_T8020_TCR_OFF + sizeof(u32) * sid, 0);
+    sysop("dsb sy");
+    if (read32(base + DART_T8020_ENABLED_STREAMS))
+        goto failed;
+
+    for (int i = 0; i < dart_t6000.ttbr_count; i++) {
+        dart->l1[i] = memalign(SZ_16K, SZ_16K);
+        if (!dart->l1[i])
+            goto failed;
+        memset(dart->l1[i], 0, SZ_16K);
+    }
+    for (size_t offset = 0; offset < size; offset += SZ_16K)
+        if (dart_map_page(dart, iova + offset, pa + offset, 0))
+            goto failed;
+
+    for (int i = 0; i < dart_t6000.ttbr_count; i++) {
+        u32 ttbr = dart_t6000.ttbr_valid | FIELD_PREP(dart_t6000.ttbr_addr,
+                          (u64)dart->l1[i] >> dart_t6000.ttbr_shift);
+        write32(DART_TTBR(dart, i), ttbr);
+        if (read32(DART_TTBR(dart, i)) != ttbr)
+            goto detach;
+    }
+    write32(DART_TCR(dart), dart_t6000.tcr_enabled);
+    if (!dart_t8020_flush_stream(dart))
+        goto detach;
+    write32(base + DART_T8020_ENABLED_STREAMS, BIT(stream));
+    sysop("dsb sy");
+    if (read32(base + DART_T8020_ENABLED_STREAMS) == BIT(stream) &&
+        read32(DART_TCR(dart)) == dart_t6000.tcr_enabled)
+        return true;
+
+detach:
+    write32(base + DART_T8020_ENABLED_STREAMS, 0);
+    write32(DART_TCR(dart), 0);
+    for (int i = 0; i < dart_t6000.ttbr_count; i++)
+        write32(DART_TTBR(dart, i), 0);
+    if (!dart_t8020_flush_stream(dart))
+        return false; /* Retain the tables if invalidation could not complete. */
+failed:
+    for (int i = 0; i < dart_t6000.ttbr_count; i++) {
+        if (!dart->l1[i])
+            continue;
+        for (unsigned j = 0; j < SZ_16K / sizeof(u64); j++) {
+            u64 entry = dart->l1[i][j];
+            if (entry & DART_PTE_VALID)
+                free((void *)(FIELD_GET(dart_t6000.offset_mask, entry) <<
+                              DART_PTE_OFFSET_SHIFT));
+        }
+        free(dart->l1[i]);
+    }
+    free(dart);
+    return false;
 }
 
 static void dart_unmap_page(dart_dev_t *dart, uintptr_t iova)

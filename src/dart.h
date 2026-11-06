@@ -17,6 +17,7 @@ enum dart_type_t {
 };
 
 dart_dev_t *dart_init(uintptr_t base, u8 device, bool keep_pts, enum dart_type_t type);
+bool dart_t6000_map_exclusive(uintptr_t base, u8 stream, u64 iova, u64 pa, size_t size);
 dart_dev_t *dart_init_adt(const char *path, int instance, int device, bool keep_pts);
 void dart_lock_adt(const char *path, int instance);
 dart_dev_t *dart_init_fdt(void *dt, u32 phandle, int device, bool keep_pts);

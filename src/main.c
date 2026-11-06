@@ -154,6 +154,8 @@ void run_actions(void)
     if (hv_j316s_setup_present()) {
         if (hv_j316s_setup_run())
             return;
+        /* Do not bring up the device-mode proxy after touching host-mode USB. */
+        usb_up |= hv_j316s_setup_owns_usb();
         goto proxy_fallback;
     }
 #endif

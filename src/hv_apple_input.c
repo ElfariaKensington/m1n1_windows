@@ -222,11 +222,15 @@ static bool read_gpio_function(int node, const char *name, u32 *controller_phand
 
 bool hv_apple_input_observe_adt(struct hv_apple_input_observed *observed)
 {
-    static const u32 expected_parents[] = HV_APPLE_INPUT_PARENT_IRQ_VALUES;
+    static const u32 j313_parents[] = HV_APPLE_INPUT_PARENT_IRQ_VALUES;
+    static const u32 j316s_parents[] = {623, 624, 625, 626, 627, 628, 629};
+    bool j316s = adt_is_compatible(adt, 0, "J316sAP");
+    const u32 *expected_parents = j316s ? j316s_parents : j313_parents;
+    size_t parent_count = j316s ? ARRAY_SIZE(j316s_parents) : ARRAY_SIZE(j313_parents);
     struct hv_apple_input_observed value = {
         /* These clocks are reviewed J313 controller settings.  The live ADT
          * proves identity and resources; it does not publish both rates. */
-        .spi_source_hz = HV_APPLE_INPUT_SPI_SOURCE_HZ,
+        .spi_source_hz = j316s ? 24000000 : HV_APPLE_INPUT_SPI_SOURCE_HZ,
         .spi_bus_hz = HV_APPLE_INPUT_SPI_BUS_HZ,
     };
     int spi = adt_path_offset(adt, "/arm-io/spi3");
@@ -279,19 +283,19 @@ bool hv_apple_input_observe_adt(struct hv_apple_input_observed *observed)
     value.nub_gpio_pin = hid_interrupts[0];
 
     parent_interrupts = adt_getprop(adt, nub_gpio, "interrupts", &length);
-    if (!parent_interrupts || length != sizeof(expected_parents)) {
+    if (!parent_interrupts || length != parent_count * sizeof(*expected_parents)) {
         printf("HV: Apple input ADT fail stage=parent-interrupts length=%u expected=%zu\n",
-               length, sizeof(expected_parents));
+               length, parent_count * sizeof(*expected_parents));
         return false;
     }
-    for (size_t i = 0; i < ARRAY_SIZE(expected_parents); i++) {
+    for (size_t i = 0; i < parent_count; i++) {
         if (parent_interrupts[i] != expected_parents[i]) {
             printf("HV: Apple input ADT fail stage=parent-value index=%zu actual=%u expected=%u\n",
                    i, parent_interrupts[i], expected_parents[i]);
             return false;
         }
     }
-    if (!hv_apple_input_select_parent_irq(parent_interrupts, ARRAY_SIZE(expected_parents),
+    if (!hv_apple_input_select_parent_irq(parent_interrupts, parent_count,
                                           HV_APPLE_INPUT_IRQ_STARTUP_GROUP,
                                           &value.parent_irq))
         return false;

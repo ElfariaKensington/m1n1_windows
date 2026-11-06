@@ -48,6 +48,7 @@ hv_fb_stream_test
 hv_fb_stream_usb_limit_test
 hv_guest_cpu_state_test
 hv_irq_routes_test
+hv_nvme_gpt_test
 hv_pci_state_test
 hv_stage2_state_test
 hv_stage_role_test
@@ -256,6 +257,10 @@ for name in "$@"; do
         hv_irq_routes_test)
             definitions="-DHV_IRQ_ROUTES_HOST_TEST"
             sources="$sources src/hv_irq_routes.c"
+            ;;
+        hv_nvme_gpt_test)
+            definitions="-DHV_NVME_GPT_HOST_TEST"
+            sources="$sources src/hv_nvme_gpt.c src/tinf/crc32.c"
             ;;
         hv_pci_state_test)
             sources="$sources src/hv_pci_state.c"

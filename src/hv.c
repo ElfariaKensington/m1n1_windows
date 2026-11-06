@@ -259,6 +259,11 @@ static bool hv_init_mode(bool isolated_setup)
                  HCR_TID3 | // Trap ID register reads from EL1
 #endif
                  HCR_VM);  // Enable stage 2 translation
+#ifdef M1N1_J316S_SETUP
+    /* Setup enables GXF at guest entry, after configuring the unguarded bank. */
+    if (isolated_setup && supports_gxf() && !gxf_enabled())
+        gl2_call(hv_write_hcr, mrs(HCR_EL2), 0, 0, 0);
+#endif
 
     // No guest vectors initially
     msr(VBAR_EL12, 0);
@@ -398,6 +403,13 @@ void hv_start(void *entry, u64 regs[4])
         guest_hcr = gl2_call(hv_read_guest_hcr, 0, 0, 0, 0);
     else
         guest_hcr = mrs(HCR_EL2);
+#ifdef M1N1_J316S_SETUP
+    if (hv_isolated_setup &&
+        (!(guest_hcr & HCR_VM) || !hv_wfx_policy_satisfied(guest_hcr))) {
+        printf("J316s Setup: unsafe guest HCR=0x%lx\n", guest_hcr);
+        return;
+    }
+#endif
     if (!hv_wfx_policy_satisfied(guest_hcr))
         hv_panic("HV: EL2 WFI/WFE policy failed guest preflight\n");
     printf("HV: EL2 WFI/WFE idle policy active HCR=0x%lx\n", guest_hcr);
@@ -1398,6 +1410,6 @@ void hv_tick(struct exc_info *ctx)
     hv_vuart_poll();
     hv_fb_stream_tick(&hv_framebuffer_stream);
 #ifdef M1N1_J316S_SETUP
-    hv_j316s_setup_draw();
+    hv_j316s_setup_draw(ctx->elr);
 #endif
 }

@@ -49,6 +49,7 @@ static u32 cfg_bar0_lo; // stores guest-written value (address bits only)
 static u32 cfg_bar0_hi;
 static u8 cfg_intr_line = 0xff;
 static bool bar_mapped;
+static bool bounded_bar;
 
 // Assembled current BAR0 address (0 until both dwords hold a real, non-sizing value).
 static u64 bar0_addr(void)
@@ -68,6 +69,8 @@ static void bar_reeval(void)
     bool sizing = (cfg_bar0_hi == 0xFFFFFFFF) || ((cfg_bar0_lo & BAR0_ADDR_MASK) == BAR0_ADDR_MASK);
     bool want =
         (cfg_command & CMD_MEM_SPACE) && addr != 0 && !sizing && (addr & (BAR0_SIZE - 1)) == 0;
+    if (bounded_bar)
+        want = want && addr == bar_window_base;
 
     if (want && !bar_mapped) {
         printf("HV: PCI BAR0 programmed at 0x%lx, arming NVMe MMIO trap\n", addr);
@@ -182,7 +185,8 @@ static bool handle_pci_cfg(struct exc_info *ctx, u64 addr, u64 *val, bool write,
     return true;
 }
 
-bool hv_pci_init(u64 ecam, u64 bar_window, int irq)
+static bool init_pci(u64 ecam, u64 bar_window, int irq, bool windows_slice,
+                     bool diagnostics_slice)
 {
     ecam_base = ecam;
     bar_window_base = bar_window;
@@ -190,11 +194,16 @@ bool hv_pci_init(u64 ecam, u64 bar_window, int irq)
     cfg_command = 0;
     cfg_bar0_lo = cfg_bar0_hi = 0;
     bar_mapped = false;
+    bounded_bar = windows_slice || diagnostics_slice;
     hv_pci_state_reset(ecam, bar_window, (u32)irq);
 
     // m1n1 retains ownership of the native Apple ANS controller. Initialize it before the
     // guest enumerates PCI so Identify can return the real namespace geometry immediately.
-    bool backend = hv_nvme_init_backend();
+    bool bounded = windows_slice || diagnostics_slice;
+    bool backend = diagnostics_slice ? hv_nvme_init_diagnostics_slice() :
+                   windows_slice ? hv_nvme_init_windows_slice() : hv_nvme_init_backend();
+    if (bounded && !backend)
+        return false;
 
     int r = hv_map_hook(ecam_base, handle_pci_cfg, 0x100000); // 1 MB = one bus
     // Self-check: confirm our SPTE_HOOK actually replaced the arm-io pass-through mapping at
@@ -206,6 +215,21 @@ bool hv_pci_init(u64 ecam, u64 bar_window, int irq)
            "(INTx SPI %d backend=%d)\n",
            ecam_base, r, pte, intx_irq, backend);
     return r == 0 && backend;
+}
+
+bool hv_pci_init(u64 ecam, u64 bar_window, int irq)
+{
+    return init_pci(ecam, bar_window, irq, false, false);
+}
+
+bool hv_pci_init_windows_slice(u64 ecam, u64 bar_window, int irq)
+{
+    return init_pci(ecam, bar_window, irq, true, false);
+}
+
+bool hv_pci_init_diagnostics_slice(u64 ecam, u64 bar_window, int irq)
+{
+    return init_pci(ecam, bar_window, irq, false, true);
 }
 
 // Exposed so hv_nvme.c can raise/lower the wired INTx line and know the window base.

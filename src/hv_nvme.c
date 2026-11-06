@@ -7,8 +7,10 @@
 #include "hv.h"
 #include "hv_runtime_diag.h"
 #include "hv_nvme_fast_path.h"
+#include "hv_nvme_gpt.h"
 #include "hv_nvme_queue.h"
 #include "hv_vgic.h"
+#include "malloc.h"
 #include "nvme.h"
 #include "smp.h"
 #include "string.h"
@@ -52,6 +54,9 @@ static u64 bar_base;
 static DECLARE_SPINLOCK(nvme_lock);
 static bool backend_ready;
 static u64 backend_blocks;
+static u64 backend_minimum_bytes;
+static struct hv_nvme_disk_slice backend_slice;
+static bool backend_bounded;
 static struct vnvme_intx_delivery irq_delivery;
 static u32 nvme_trace_budget;
 static struct vnvme_ctrl queue_ctrl;
@@ -85,25 +90,33 @@ static bool nvme_trace_take(void)
 static bool backend_read(void *opaque, u64 lba, void *buffer)
 {
     UNUSED(opaque);
-    return nvme_read(1, lba, buffer);
+    u64 physical;
+    return hv_nvme_slice_translate(&backend_slice, lba, 1, &physical) &&
+           nvme_read(1, physical, buffer);
 }
 
 static bool backend_write(void *opaque, u64 lba, const void *buffer)
 {
     UNUSED(opaque);
-    return nvme_write(1, lba, buffer);
+    u64 physical;
+    return hv_nvme_slice_translate(&backend_slice, lba, 1, &physical) &&
+           nvme_write(1, physical, buffer);
 }
 
 static bool backend_read_blocks(void *opaque, u64 lba, u32 blocks, void *buffer)
 {
     UNUSED(opaque);
-    return nvme_read_blocks(1, lba, blocks, buffer);
+    u64 physical;
+    return hv_nvme_slice_translate(&backend_slice, lba, blocks, &physical) &&
+           nvme_read_blocks(1, physical, blocks, buffer);
 }
 
 static bool backend_write_blocks(void *opaque, u64 lba, u32 blocks, const void *buffer)
 {
     UNUSED(opaque);
-    return nvme_write_blocks(1, lba, blocks, buffer);
+    u64 physical;
+    return hv_nvme_slice_translate(&backend_slice, lba, blocks, &physical) &&
+           nvme_write_blocks(1, physical, blocks, buffer);
 }
 
 static bool backend_flush(void *opaque)
@@ -328,17 +341,23 @@ static const struct vnvme_backend_ops backend_ops = {
     .trace = backend_trace,
 };
 
-bool hv_nvme_init_backend(void)
+static bool read_physical_gpt(u64 lba, void *block)
+{
+    return nvme_read(1, lba, block);
+}
+
+static bool init_backend(bool bounded, u64 minimum_bytes)
 {
     if (backend_ready)
-        return true;
+        return backend_bounded == bounded && backend_minimum_bytes == minimum_bytes;
     if (!nvme_init()) {
         printf("HV: NVMe backend: Apple ANS initialization failed\n");
         return false;
     }
 
     u32 lba_size = 0;
-    if (!nvme_get_namespace_info(1, &backend_blocks, &lba_size)) {
+    u64 disk_blocks;
+    if (!nvme_get_namespace_info(1, &disk_blocks, &lba_size)) {
         printf("HV: NVMe backend: Identify Namespace 1 failed\n");
         return false;
     }
@@ -348,10 +367,43 @@ bool hv_nvme_init_backend(void)
         return false;
     }
 
+    if (bounded) {
+        void *scratch = memalign(HV_NVME_GPT_BLOCK_SIZE, HV_NVME_GPT_SCRATCH_SIZE);
+        if (!scratch)
+            return false;
+        bool found = hv_nvme_gpt_find_windows_minimum(
+            disk_blocks, read_physical_gpt, scratch, &backend_slice,
+            minimum_bytes / HV_NVME_GPT_BLOCK_SIZE);
+        free(scratch);
+        if (!found) {
+            printf("HV: NVMe backend: no verified Windows slice\n");
+            return false;
+        }
+    } else {
+        backend_slice = (struct hv_nvme_disk_slice){0, disk_blocks};
+    }
+    backend_blocks = backend_slice.blocks;
+    backend_bounded = bounded;
+    backend_minimum_bytes = minimum_bytes;
     backend_ready = true;
     printf("HV: NVMe backend: namespace 1, %lu x %u-byte blocks (%lu MiB)\n", backend_blocks,
            lba_size, backend_blocks / 256);
     return true;
+}
+
+bool hv_nvme_init_backend(void)
+{
+    return init_backend(false, 0);
+}
+
+bool hv_nvme_init_windows_slice(void)
+{
+    return init_backend(true, 64ULL << 30);
+}
+
+bool hv_nvme_init_diagnostics_slice(void)
+{
+    return init_backend(true, 1ULL << 30);
 }
 
 static void reset_frontend(void)

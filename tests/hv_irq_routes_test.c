@@ -116,6 +116,13 @@ int main(void)
 
     test_agx_g2_routes_and_apple_input_capacity();
 
+    hv_irq_routes_reset(false);
+    assert(hv_irq_route_register(1207, 857, true));
+    assert(hv_irq_route_resolve_incoming(1207, 64, &vintid) && vintid == 857);
+    assert(hv_irq_route_level_eoi_target(857, true, &hw_irq) && hw_irq == 1207);
+    assert(!hv_irq_route_register(0x10000, 858, true));
+    assert(!hv_irq_route_register(1208, 1208, true));
+
     puts("hv_irq_routes_test: ok");
     return 0;
 }

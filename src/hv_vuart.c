@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 
+#include "../build/build_cfg.h"
 #include "hv.h"
 #include "hv_runtime_diag.h"
 #include "aic.h"
@@ -58,6 +59,21 @@ static void handle_vuart_passthrough(uint8_t b)
     if (!hv_runtime_diag_enabled())
         return;
 
+#ifdef M1N1_J316S_SETUP
+    /* Each framebuffer console write copies the whole scanout buffer. */
+    static char line[256] = "FW> ";
+    static size_t used = sizeof("FW> ") - 1;
+
+    if (b == '\r')
+        return;
+    line[used++] = b;
+    if (b == '\n' || used == sizeof(line) - 1) {
+        if (b != '\n')
+            line[used++] = '\n';
+        iodev_console_write(line, used);
+        used = sizeof("FW> ") - 1;
+    }
+#else
     // Firmware S5L console -> m1n1 console (…41 / hv.log), kept off the kd channel. Each
     // line is prefixed so it is distinguishable from m1n1's own log output.
     static bool sol = true;
@@ -74,6 +90,7 @@ static void handle_vuart_passthrough(uint8_t b)
         sol = false;
     }
     printf("%c", b);
+#endif
 }
 
 static bool handle_vuart(struct exc_info *ctx, u64 addr, u64 *val, bool write, int width)

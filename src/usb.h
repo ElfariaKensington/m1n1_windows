@@ -8,6 +8,7 @@
 #include "usb_dwc3.h"
 
 dwc3_dev_t *usb_bringup(u32 idx);
+int usb_phy_bringup(u32 idx);
 
 void usb_init(void);
 void usb_hpm_restore_irqs(bool force);

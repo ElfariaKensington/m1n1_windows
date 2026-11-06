@@ -377,7 +377,7 @@ int hv_map(u64 from, u64 to, u64 size, u64 incr)
         target = 0;
     } else if (IS_HW(requested_to)) {
         kind = HV_STAGE2_MAPPING_HARDWARE;
-        target = requested_to & PTE_TARGET_MASK_L4;
+        target = requested_to & PTE_TARGET_MASK;
     } else if (FIELD_GET(SPTE_TYPE, requested_to) == SPTE_MAP) {
         kind = HV_STAGE2_MAPPING_SOFTWARE;
         target = requested_to & PTE_TARGET_MASK_L4;
@@ -464,8 +464,13 @@ int hv_map_hook(u64 from, hv_hook_t *hook, u64 size)
 
 u64 hv_translate(u64 addr, bool s1, bool w, u64 *par_out)
 {
-    if (!(mrs(SCTLR_EL12) & SCTLR_M))
-        return addr; // MMU off
+    if (!(mrs(SCTLR_EL12) & SCTLR_M)) {
+        /* Stage 1 is identity here, but stage 2 can still remap guest RAM. */
+        u64 pa = s1 ? addr : hv_ipa_to_pa(addr);
+        if (par_out)
+            *par_out = s1 || pa ? (pa & PAR_PA) : PAR_F;
+        return pa;
+    }
 
     u64 el = FIELD_GET(SPSR_M, hv_get_spsr()) >> 2;
     u64 save = mrs(PAR_EL1);
@@ -496,6 +501,7 @@ u64 hv_translate(u64 addr, bool s1, bool w, u64 *par_out)
         }
     }
 
+    sysop("isb");
     u64 par = mrs(PAR_EL1);
     if (par_out)
         *par_out = par;
@@ -588,6 +594,9 @@ u64 hv_pt_walk(u64 addr)
 //
 u64 hv_ipa_to_pa(u64 ipa)
 {
+    if (!hv_Ltop || ipa >= BIT(vaddr_bits))
+        return 0;
+
     u64 pte = hv_pt_walk(ipa);
 
     if (!IS_HW(pte))
@@ -1279,12 +1288,13 @@ bool hv_handle_dabort(struct exc_info *ctx)
 
     u64 elr = ctx->elr;
     u64 elr_pa = hv_translate(elr, false, false, NULL);
-    if (!elr_pa) {
+    u64 instruction = 0;
+    if (!elr_pa || !hv_pa_read(ctx, elr_pa, &instruction, 2)) {
         printf("HV: Failed to fetch instruction for data abort at 0x%lx\n", elr);
         return false;
     }
 
-    u32 insn = read32(elr_pa);
+    u32 insn = instruction;
     u64 width;
 
     hv_wdt_breadcrumb('2');

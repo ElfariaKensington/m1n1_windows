@@ -33,12 +33,40 @@
 #define FRAME_HEIGHT ((u32)J316S_SETUP_FB_HEIGHT)
 #define FRAME_STRIDE (FRAME_WIDTH * 4u)
 #define EL2_HEAP_HEADROOM (512ULL * 1024 * 1024)
+#define J316S_SETUP_XHCI_COUNT 3u
+
+struct j316s_setup_xhci {
+    const char *controller;
+    const char *darts;
+    u64 base;
+    u64 dart0;
+    u64 dart1;
+    u32 aic_irq;
+    u32 vintid;
+    u32 index;
+};
+
+static const struct j316s_setup_xhci setup_xhci[] = {
+    {"/arm-io/usb-drd0", "/arm-io/dart-usb0", J316S_SETUP_XHCI0,
+     J316S_SETUP_USB0_DART0, J316S_SETUP_USB0_DART1,
+     J316S_SETUP_XHCI_AIC_IRQ0, J316S_SETUP_XHCI_VINTID0, 0},
+    {"/arm-io/usb-drd1", "/arm-io/dart-usb1", J316S_SETUP_XHCI1,
+     J316S_SETUP_USB1_DART0, J316S_SETUP_USB1_DART1,
+     J316S_SETUP_XHCI_AIC_IRQ1, J316S_SETUP_XHCI_VINTID1, 1},
+    {"/arm-io/usb-drd2", "/arm-io/dart-usb2", J316S_SETUP_XHCI2,
+     J316S_SETUP_USB2_DART0, J316S_SETUP_USB2_DART1,
+     J316S_SETUP_XHCI_AIC_IRQ2, J316S_SETUP_XHCI_VINTID2, 2},
+};
+
+_Static_assert(ARRAY_SIZE(setup_xhci) == J316S_SETUP_XHCI_COUNT,
+               "J316s USB controller table");
 
 static u64 backing;
 static u64 next_frame_tick;
 static bool draw_setup;
 static bool frame_seen;
 static bool owns_usb;
+static u32 setup_usb_mask;
 
 bool hv_j316s_setup_owns_usb(void)
 {
@@ -115,7 +143,7 @@ static void write_boot_args(void)
 
 static bool verify_mappings(bool usb, bool input, bool storage)
 {
-    struct hv_stage2_mapping allowed[] = {
+    struct hv_stage2_mapping allowed[6 + J316S_SETUP_XHCI_COUNT + 3 + 1] = {
         {J316S_SETUP_GIC_DIST, 0, 0x10000, 0, HV_STAGE2_MAPPING_HOOK},
         {J316S_SETUP_GIC_REDIST, 0, HV_VGIC_T6000_CPU_COUNT * HV_VGIC_REDIST_STRIDE,
          0, HV_STAGE2_MAPPING_HOOK},
@@ -124,15 +152,24 @@ static bool verify_mappings(bool usb, bool input, bool storage)
         {J316S_SETUP_LOW_IPA, (u64)guest_ptr(J316S_SETUP_LOW_BACKING),
          J316S_SETUP_LOW_SIZE, 1, HV_STAGE2_MAPPING_HARDWARE},
         {J316S_SETUP_UART, 0, 0x2000, 0, HV_STAGE2_MAPPING_HOOK},
-        {J316S_SETUP_XHCI, 0, J316S_SETUP_XHCI_SIZE, 0, HV_STAGE2_MAPPING_HOOK},
-        {J316S_SETUP_INPUT_SPI, 0, SZ_16K, 0, HV_STAGE2_MAPPING_HOOK},
-        {J316S_SETUP_INPUT_AP_GPIO, 0, SZ_16K, 0, HV_STAGE2_MAPPING_HOOK},
-        {J316S_SETUP_INPUT_NUB_GPIO, 0, SZ_16K, 0, HV_STAGE2_MAPPING_HOOK},
-        {J316S_SETUP_ECAM, 0, J316S_SETUP_ECAM_SIZE, 0, HV_STAGE2_MAPPING_HOOK},
     };
-    size_t count = ARRAY_SIZE(allowed) - 1 - 3 * !input - !usb;
+
+    size_t count = 6;
+    if (usb)
+        for (size_t i = 0; i < ARRAY_SIZE(setup_xhci); i++)
+            allowed[count++] = (struct hv_stage2_mapping){
+                setup_xhci[i].base, 0, J316S_SETUP_XHCI_SIZE, 0, HV_STAGE2_MAPPING_HOOK};
+    if (input) {
+        allowed[count++] = (struct hv_stage2_mapping){
+            J316S_SETUP_INPUT_SPI, 0, SZ_16K, 0, HV_STAGE2_MAPPING_HOOK};
+        allowed[count++] = (struct hv_stage2_mapping){
+            J316S_SETUP_INPUT_AP_GPIO, 0, SZ_16K, 0, HV_STAGE2_MAPPING_HOOK};
+        allowed[count++] = (struct hv_stage2_mapping){
+            J316S_SETUP_INPUT_NUB_GPIO, 0, SZ_16K, 0, HV_STAGE2_MAPPING_HOOK};
+    }
     if (storage)
-        allowed[count++] = allowed[ARRAY_SIZE(allowed) - 1];
+        allowed[count++] = (struct hv_stage2_mapping){
+            J316S_SETUP_ECAM, 0, J316S_SETUP_ECAM_SIZE, 0, HV_STAGE2_MAPPING_HOOK};
     return hv_stage2_state_matches(allowed, count);
 }
 
@@ -209,15 +246,19 @@ static bool prepare_input(void)
 
 static bool xhci_mmio(struct exc_info *ctx, u64 addr, u64 *val, bool write, int width)
 {
-    u64 offset = addr - J316S_SETUP_XHCI;
-    if (width < 0 || width > 3 || offset >= J316S_SETUP_XHCI_SIZE ||
-        (1ULL << width) > J316S_SETUP_XHCI_SIZE - offset)
-        return false;
-    if (!hv_pa_rw(ctx, addr, val, write, width))
-        return false;
-    if (!write)
-        *val = hv_xhci_cap_read_for_guest(offset, *val, width);
-    return true;
+    for (size_t i = 0; i < ARRAY_SIZE(setup_xhci); i++) {
+        u64 base = setup_xhci[i].base;
+        if (addr < base || addr - base >= J316S_SETUP_XHCI_SIZE)
+            continue;
+        u64 offset = addr - base;
+        if (width < 0 || width > 3 || (1ULL << width) > J316S_SETUP_XHCI_SIZE - offset ||
+            !hv_pa_rw(ctx, addr, val, write, width))
+            return false;
+        if (!write)
+            *val = hv_xhci_cap_read_for_guest(offset, *val, width);
+        return true;
+    }
+    return false;
 }
 
 static bool usb_reg_matches(const char *path, int index, u64 expected, u64 min_size)
@@ -229,31 +270,17 @@ static bool usb_reg_matches(const char *path, int index, u64 expected, u64 min_s
            base == expected && size >= min_size;
 }
 
-static bool prepare_usb(void)
+static void reset_setup_usb(void)
 {
-    const char *controller = "/arm-io/usb-drd1";
-    const char *darts = "/arm-io/dart-usb1";
-    const u64 base = J316S_SETUP_XHCI;
-    const u64 dart0 = 0xb02f00000ULL;
-    const u64 dart1 = 0xb02f80000ULL;
-    int node = adt_path_offset(adt, controller);
-    int dart_node = adt_path_offset(adt, darts);
-    u32 irq_size = 0;
-    const u32 *irqs = node < 0 ? NULL : adt_getprop(adt, node, "interrupts", &irq_size);
-    if (!irqs || irq_size < sizeof(*irqs) || irqs[0] != J316S_SETUP_XHCI_AIC_IRQ ||
-        !adt_is_compatible(adt, node, "usb-drd,t6000") || dart_node < 0 ||
-        !adt_is_compatible(adt, dart_node, "dart,t6000") ||
-        !usb_reg_matches(controller, 0, base, 0xcd44) ||
-        !usb_reg_matches(controller, 2, base + 0xc000, 0xd44) ||
-        !usb_reg_matches(darts, 0, dart0, SZ_16K) ||
-        !usb_reg_matches(darts, 1, dart1, SZ_16K) ||
-        iodev_get_usage(IODEV_USB0 + 1))
-        return false;
+    for (size_t i = 0; i < ARRAY_SIZE(setup_xhci); i++)
+        if (setup_usb_mask & BIT(setup_xhci[i].index))
+            set32(setup_xhci[i].base + DWC3_GCTL, DWC3_GCTL_CORESOFTRESET);
+    setup_usb_mask = 0;
+}
 
-    owns_usb = true;
-    aic_set_mask(J316S_SETUP_XHCI_AIC_IRQ, true);
-    if (usb_phy_bringup(1) < 0)
-        return false;
+static bool prepare_usb_port(const struct j316s_setup_xhci *port)
+{
+    const u64 base = port->base;
 
     /* Aurora's USB2 host initialization uses the existing ATC PHY and resets
      * the Synopsys core and PHYs before switching to host mode. */
@@ -266,8 +293,10 @@ static bool prepare_usb(void)
     mdelay(100);
 
     u64 low_pa = (u64)guest_ptr(J316S_SETUP_LOW_BACKING);
-    if (!dart_t6000_map_exclusive(dart0, 0, J316S_SETUP_LOW_IPA, low_pa, J316S_SETUP_LOW_SIZE) ||
-        !dart_t6000_map_exclusive(dart1, 1, J316S_SETUP_LOW_IPA, low_pa, J316S_SETUP_LOW_SIZE))
+    if (!dart_t6000_map_exclusive(port->dart0, 0, J316S_SETUP_LOW_IPA,
+                                  low_pa, J316S_SETUP_LOW_SIZE) ||
+        !dart_t6000_map_exclusive(port->dart1, 1, J316S_SETUP_LOW_IPA,
+                                  low_pa, J316S_SETUP_LOW_SIZE))
         return false;
 
     clear32(base + DWC3_GUSB2PHYCFG(0), DWC3_GUSB2PHYCFG_PHYSOFTRST);
@@ -291,13 +320,57 @@ static bool prepare_usb(void)
 
     u32 caps = read32(base);
     if ((caps & 0xff) < 0x20 || caps >> 16 < 0x100 ||
-        !hv_irq_route_register(J316S_SETUP_XHCI_AIC_IRQ, J316S_SETUP_XHCI_VINTID, true) ||
-        hv_map_hook(base, xhci_mmio, J316S_SETUP_XHCI_SIZE) ||
-        !verify_mappings(true, false, false)) {
-        set32(base + DWC3_GCTL, DWC3_GCTL_CORESOFTRESET);
+        !hv_irq_route_register(port->aic_irq, port->vintid, true) ||
+        hv_map_hook(base, xhci_mmio, J316S_SETUP_XHCI_SIZE))
+        return false;
+
+    printf("J316s Setup: usb-drd%u enabled at 0x%lx, IRQ %u -> %u\n",
+           port->index, port->base, port->aic_irq, port->vintid);
+    return true;
+}
+
+static bool prepare_usb(void)
+{
+    for (size_t i = 0; i < ARRAY_SIZE(setup_xhci); i++) {
+        const struct j316s_setup_xhci *port = &setup_xhci[i];
+        int node = adt_path_offset(adt, port->controller);
+        int dart_node = adt_path_offset(adt, port->darts);
+        u32 irq_size = 0;
+        u32 port_number = 0;
+        const u32 *irqs = node < 0 ? NULL : adt_getprop(adt, node, "interrupts", &irq_size);
+        if (!irqs || irq_size < sizeof(*irqs) || irqs[0] != port->aic_irq ||
+            ADT_GETPROP(adt, node, "port-number", &port_number) < 0 ||
+            port_number != port->index + 1 ||
+            !adt_is_compatible(adt, node, "usb-drd,t6000") || dart_node < 0 ||
+            !adt_is_compatible(adt, dart_node, "dart,t6000") ||
+            !usb_reg_matches(port->controller, 0, port->base, 0xcd44) ||
+            !usb_reg_matches(port->controller, 2, port->base + 0xc000, 0xd44) ||
+            !usb_reg_matches(port->darts, 0, port->dart0, SZ_16K) ||
+            !usb_reg_matches(port->darts, 1, port->dart1, SZ_16K) ||
+            iodev_get_usage(IODEV_USB0 + port->index)) {
+            printf("J316s Setup: USB port %u ADT or ownership preflight failed\n", port->index);
+            return false;
+        }
+    }
+
+    owns_usb = true;
+    setup_usb_mask = 0;
+    for (size_t i = 0; i < ARRAY_SIZE(setup_xhci); i++) {
+        const struct j316s_setup_xhci *port = &setup_xhci[i];
+        aic_set_mask(port->aic_irq, true);
+        setup_usb_mask |= BIT(port->index);
+        if (usb_phy_bringup(port->index) < 0 || !prepare_usb_port(port)) {
+            printf("J316s Setup: USB port %u initialization failed\n", port->index);
+            reset_setup_usb();
+            return false;
+        }
+    }
+    if (!verify_mappings(true, false, false)) {
+        printf("J316s Setup: USB stage-2 mapping allowlist mismatch\n");
+        reset_setup_usb();
         return false;
     }
-    printf("J316s Setup: USB-C left front xHCI enabled with guest-only DMA\n");
+    printf("J316s Setup: all three J316s USB-C xHCI controllers enabled with guest-only DMA\n");
     return true;
 }
 
@@ -360,9 +433,13 @@ bool hv_j316s_setup_run(void)
     u64 size_available = cur_boot_args.top_of_kernel_data - (u64)_payload_start;
     bool usb = header->flags & J316S_SETUP_USB_FLAG;
     bool input = header->flags & J316S_SETUP_INPUT_FLAG;
-    bool storage = header->flags & J316S_SETUP_STORAGE_FLAG;
+    bool diagnostics_storage = header->flags & J316S_SETUP_DIAGNOSTICS_STORAGE_FLAG;
+    bool storage = header->flags & (J316S_SETUP_STORAGE_FLAG |
+                                    J316S_SETUP_DIAGNOSTICS_STORAGE_FLAG);
     if ((header->flags & ~(J316S_SETUP_USB_FLAG | J316S_SETUP_INPUT_FLAG |
-                          J316S_SETUP_STORAGE_FLAG)) ||
+                          J316S_SETUP_STORAGE_FLAG |
+                          J316S_SETUP_DIAGNOSTICS_STORAGE_FLAG)) ||
+        (diagnostics_storage && (!input || (header->flags & J316S_SETUP_STORAGE_FLAG))) ||
         ((input || storage) && !usb) || size_available < fixed_size ||
         header->media_size < SZ_1M || header->media_size % 512 ||
         header->media_size > J316S_SETUP_RAMDISK_SIZE - J316S_SETUP_RAMDISK_HEADER_SIZE ||
@@ -426,15 +503,18 @@ bool hv_j316s_setup_run(void)
         return false;
     }
     if (input && !prepare_input()) {
-        set32(J316S_SETUP_XHCI + DWC3_GCTL, DWC3_GCTL_CORESOFTRESET);
+        reset_setup_usb();
         printf("J316s Setup: Apple input preflight failed; guest not started\n");
         return false;
     }
     if (storage &&
-        (!hv_pci_init_windows_slice(J316S_SETUP_ECAM, J316S_SETUP_NVME_BAR,
-                                    J316S_SETUP_NVME_INTID) ||
+        (!(diagnostics_storage ?
+             hv_pci_init_diagnostics_slice(J316S_SETUP_ECAM, J316S_SETUP_NVME_BAR,
+                                           J316S_SETUP_NVME_INTID) :
+             hv_pci_init_windows_slice(J316S_SETUP_ECAM, J316S_SETUP_NVME_BAR,
+                                       J316S_SETUP_NVME_INTID)) ||
          !verify_mappings(true, input, true))) {
-        set32(J316S_SETUP_XHCI + DWC3_GCTL, DWC3_GCTL_CORESOFTRESET);
+        reset_setup_usb();
         printf("J316s Setup: bounded Windows disk unavailable; guest not started\n");
         return false;
     }

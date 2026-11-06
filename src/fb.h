@@ -42,6 +42,8 @@ void fb_update(void);
 void fb_set_active(bool active);
 
 void fb_blit(u32 x, u32 y, u32 w, u32 h, void *data, u32 stride, pix_fmt_t format);
+void fb_blit_scaled(u32 x, u32 y, u32 w, u32 h, void *data, u32 stride, pix_fmt_t format,
+                    u32 scale);
 void fb_unblit(u32 x, u32 y, u32 w, u32 h, void *data, u32 stride);
 void fb_fill(u32 x, u32 y, u32 w, u32 h, rgb_t color);
 void fb_clear(rgb_t color);

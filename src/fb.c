@@ -152,7 +152,8 @@ static inline rgb_t fb_get_pixel(u32 x, u32 y)
     return pixel2rgb(fb.ptr[x + y * fb.stride]);
 }
 
-void fb_blit(u32 x, u32 y, u32 w, u32 h, void *data, u32 stride, pix_fmt_t pix_fmt)
+void fb_blit_scaled(u32 x, u32 y, u32 w, u32 h, void *data, u32 stride, pix_fmt_t pix_fmt,
+                    u32 scale)
 {
     u8 *p = data;
 
@@ -172,10 +173,20 @@ void fb_blit(u32 x, u32 y, u32 w, u32 h, void *data, u32 stride, pix_fmt_t pix_f
                     color.b = p[(j + i * stride) * 4];
                     break;
             }
-            fb_set_pixel(x + j, y + i, color);
+            u32 pixel = rgb2pixel(color);
+            for (u32 row = 0; row < scale; row++) {
+                u32 *dest = fb.ptr + (y + i * scale + row) * fb.stride + x + j * scale;
+                for (u32 col = 0; col < scale; col++)
+                    dest[col] = pixel;
+            }
         }
     }
     fb_update();
+}
+
+void fb_blit(u32 x, u32 y, u32 w, u32 h, void *data, u32 stride, pix_fmt_t pix_fmt)
+{
+    fb_blit_scaled(x, y, w, h, data, stride, pix_fmt, 1);
 }
 
 void fb_unblit(u32 x, u32 y, u32 w, u32 h, void *data, u32 stride)
