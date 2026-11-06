@@ -174,6 +174,8 @@ static bool input_mmio(struct exc_info *ctx, u64 addr, u64 *val, bool write, int
 
 static bool prepare_input(void)
 {
+    const u32 pin_function = GENMASK(6, 5);
+    const u32 input_enable = BIT(9);
     struct hv_apple_input_observed input;
     if (!hv_apple_input_observe_adt(&input) || !input.spi_compatible || !input.hid_compatible ||
         input.spi_base != J316S_SETUP_INPUT_SPI || input.spi_size != SZ_16K ||
@@ -191,7 +193,18 @@ static bool prepare_input(void)
         hv_map_hook(J316S_SETUP_INPUT_AP_GPIO, input_mmio, SZ_16K) ||
         hv_map_hook(J316S_SETUP_INPUT_NUB_GPIO, input_mmio, SZ_16K))
         return false;
-    return verify_mappings(true, true, false);
+    if (!verify_mappings(true, true, false))
+        return false;
+
+    /* T600x SPI3 uses AP pins 52–55, function 1. Configure these in EL2;
+     * the guest is allowed to touch only SPI enable and the Nub IRQ pin. */
+    for (u32 pin = 52; pin <= 55; pin++)
+        mask32(input.ap_gpio_base + 4 * pin, pin_function | input_enable,
+               FIELD_PREP(pin_function, 1) | input_enable);
+    /* SPI enable is an active-high GPIO, not a peripheral signal. */
+    clear32(input.ap_gpio_base + 4 * input.ap_gpio_pin, pin_function);
+    sysop("dsb sy");
+    return true;
 }
 
 static bool xhci_mmio(struct exc_info *ctx, u64 addr, u64 *val, bool write, int width)
