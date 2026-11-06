@@ -1,0 +1,360 @@
+{
+  "source": "ANSDART001-R3 adt.bin (J313, iBoot-11881.140.96.701.1, OS FW 13.5)",
+  "adt_sha256": "d1d057561a1add9b27471994541cf244b531540671bcbcaacbd31741eedfa733",
+  "boot_args": {
+    "phys_base": "0x802078000",
+    "mem_size": "0x1dd690000",
+    "mem_size_actual": "0x200000000",
+    "ram_base": "0x800000000"
+  },
+  "mcc_tz_carveouts": [
+    [
+      "0x9df710000",
+      "0x1c28000"
+    ],
+    [
+      "0x9df708000",
+      "0x8000"
+    ],
+    [
+      "0x9e6e20000",
+      "0x19000000"
+    ]
+  ],
+  "carveout_memory_map": {
+    "region-id-81": [
+      "0x9fffc0000",
+      "0x40000"
+    ],
+    "region-id-7": [
+      "0x9fffbc000",
+      "0x4000"
+    ],
+    "region-id-8": [
+      "0x9fffb8000",
+      "0x4000"
+    ],
+    "region-id-52": [
+      "0x9fff78000",
+      "0x40000"
+    ],
+    "region-id-56": [
+      "0x9fff70000",
+      "0x4000"
+    ],
+    "region-id-55": [
+      "0x9fff6c000",
+      "0x4000"
+    ],
+    "region-id-76": [
+      "0x9fff60000",
+      "0xc000"
+    ],
+    "region-id-90": [
+      "0x9fff5c000",
+      "0x4000"
+    ],
+    "region-id-16": [
+      "0x9fff34000",
+      "0x28000"
+    ],
+    "region-id-18": [
+      "0x9fff0c000",
+      "0x28000"
+    ],
+    "region-id-17": [
+      "0x9fff04000",
+      "0x8000"
+    ],
+    "region-id-68": [
+      "0x9ffedc000",
+      "0x28000"
+    ],
+    "region-id-70": [
+      "0x9ffeb4000",
+      "0x28000"
+    ],
+    "region-id-69": [
+      "0x9ffeac000",
+      "0x8000"
+    ],
+    "region-id-80": [
+      "0x9ffe94000",
+      "0x18000"
+    ],
+    "region-id-96": [
+      "0x9ffe54000",
+      "0x40000"
+    ],
+    "region-id-97": [
+      "0x9ffe20000",
+      "0x34000"
+    ],
+    "region-id-98": [
+      "0x9e6758000",
+      "0x188000"
+    ],
+    "region-id-2": [
+      "0x9e6e20000",
+      "0x19000000"
+    ],
+    "region-id-14": [
+      "0x9e2638000",
+      "0x2d5c000"
+    ],
+    "region-id-50": [
+      "0x9e6458000",
+      "0x300000"
+    ],
+    "region-id-57": [
+      "0x9e5458000",
+      "0x1000000"
+    ],
+    "region-id-94": [
+      "0x9e5454000",
+      "0x4000"
+    ],
+    "region-id-73": [
+      "0x9e2338000",
+      "0x300000"
+    ],
+    "region-id-74": [
+      "0x9e1338000",
+      "0x1000000"
+    ],
+    "region-id-95": [
+      "0x9e5394000",
+      "0xc0000"
+    ],
+    "region-id-77": [
+      "0x9e699c000",
+      "0x484000"
+    ],
+    "region-id-79": [
+      "0x9e68e0000",
+      "0xbc000"
+    ],
+    "region-id-4": [
+      "0x9df710000",
+      "0x1c28000"
+    ],
+    "region-id-5": [
+      "0x9df708000",
+      "0x8000"
+    ],
+    "region-id-181": [
+      "0x86d094000",
+      "0x10000"
+    ],
+    "region-id-190": [
+      "0x86d0a4000",
+      "0x10000"
+    ],
+    "region-id-182": [
+      "0x86d0b4000",
+      "0x48000"
+    ],
+    "region-id-176": [
+      "0x86d0fc000",
+      "0x400000"
+    ],
+    "region-id-179": [
+      "0x86f4fc000",
+      "0x1c000"
+    ],
+    "region-id-180": [
+      "0x86d4fc000",
+      "0x2000000"
+    ],
+    "region-id-24": [
+      "0x802078000",
+      "0x1dd690000"
+    ],
+    "region-id-25": [
+      "0x8019b0000",
+      "0x6c8000"
+    ],
+    "region-id-53": [
+      "0x801578000",
+      "0x438000"
+    ],
+    "region-id-49": [
+      "0x800220000",
+      "0x704000"
+    ],
+    "region-id-61": [
+      "0x8001d4000",
+      "0x28000"
+    ],
+    "region-id-62": [
+      "0x8001fc000",
+      "0x1c000"
+    ],
+    "region-id-63": [
+      "0x800218000",
+      "0x4000"
+    ],
+    "region-id-64": [
+      "0x80021c000",
+      "0x4000"
+    ],
+    "region-id-28": [
+      "0x800034000",
+      "0x1a0000"
+    ],
+    "region-id-26": [
+      "0x800034000",
+      "0x1544000"
+    ],
+    "region-id-11": [
+      "0x800004000",
+      "0x30000"
+    ],
+    "region-id-1": [
+      "0x800000000",
+      "0x4000"
+    ],
+    "region-id-159": [
+      "0x86c090000",
+      "0x1000000"
+    ],
+    "region-id-23": [
+      "0x864000000",
+      "0x4000"
+    ],
+    "region-id-19": [
+      "0x860500000",
+      "0xfa0000"
+    ],
+    "region-id-31": [
+      "0x24ac00000",
+      "0x250000"
+    ],
+    "region-id-36": [
+      "0x23df00000",
+      "0x80000"
+    ],
+    "region-id-32": [
+      "0x23b500000",
+      "0x80000"
+    ],
+    "region-id-29": [
+      "0x23df00000",
+      "0x20000"
+    ],
+    "region-id-165": [
+      "0x86bc4c000",
+      "0x440000"
+    ],
+    "region-id-163": [
+      "0x86bc08000",
+      "0x40000"
+    ],
+    "region-id-158": [
+      "0x864004000",
+      "0x200000"
+    ],
+    "region-id-167": [
+      "0x864204000",
+      "0x7a00000"
+    ],
+    "region-id-166": [
+      "0x1fc03c000",
+      "0x10000"
+    ],
+    "region-id-153": [
+      "0x1fc030000",
+      "0x4000"
+    ],
+    "region-id-154": [
+      "0x1fc034000",
+      "0x4000"
+    ],
+    "region-id-155": [
+      "0x1fc038000",
+      "0x4000"
+    ],
+    "region-id-164": [
+      "0x1fc000000",
+      "0x30000"
+    ],
+    "region-id-168": [
+      "0x1fc04c000",
+      "0x374000"
+    ]
+  },
+  "vram": [
+    "0x9e2638000",
+    "0x2d5c000"
+  ],
+  "sgx": {
+    "gfx-handoff-base": "0x9fff70000",
+    "gfx-handoff-size": "0x4000",
+    "gfx-shared-region-base": "0x9fff78000",
+    "gfx-shared-region-size": "0x40000",
+    "gpu-region-base": "0x9fffb8000",
+    "gpu-region-size": "0x4000"
+  },
+  "pmap_io_ranges_dram": [
+    {
+      "addr": "0x9fff0c000",
+      "size": "0x28000",
+      "flags": "0x60004002",
+      "name": "CARV"
+    },
+    {
+      "addr": "0x9fff34000",
+      "size": "0x28000",
+      "flags": "0x60004016",
+      "name": "CARV"
+    },
+    {
+      "addr": "0x9fff04000",
+      "size": "0x8000",
+      "flags": "0x60004016",
+      "name": "CARV"
+    },
+    {
+      "addr": "0x9ffeb4000",
+      "size": "0x28000",
+      "flags": "0x60004002",
+      "name": "CARV"
+    },
+    {
+      "addr": "0x9ffedc000",
+      "size": "0x28000",
+      "flags": "0x60004016",
+      "name": "CARV"
+    },
+    {
+      "addr": "0x9ffeac000",
+      "size": "0x8000",
+      "flags": "0x60004016",
+      "name": "CARV"
+    },
+    {
+      "addr": "0x9fffb8000",
+      "size": "0x4000",
+      "flags": "0x60004016",
+      "name": "GUAT"
+    },
+    {
+      "addr": "0x9fff78000",
+      "size": "0x40000",
+      "flags": "0x60004002",
+      "name": "GUAT"
+    },
+    {
+      "addr": "0x9fff70000",
+      "size": "0x4000",
+      "flags": "0x60004016",
+      "name": "GUAT"
+    },
+    {
+      "addr": "0x801ad8000",
+      "size": "0x78000",
+      "flags": "0x4002",
+      "name": "GUAT"
+    }
+  ]
+}

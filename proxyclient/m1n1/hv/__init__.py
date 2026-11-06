@@ -15,6 +15,7 @@ from .gdbserver import *
 from .types import *
 from .virtutils import *
 from .virtio import *
+from .stage2_policy import above_ram_policy
 
 __all__ = ["HV"]
 
@@ -2092,6 +2093,24 @@ class HV(Reloadable):
             self.del_tracer(irange(base, size), "RAM-HIGH")
             carveout_p += 16
 
+    def unmap_above_ram(self, mem_top, dram_end):
+        """Remove firmware carveouts above guest RAM from the RAM-HIGH pass-through.
+
+        Keeps only the ADT-described framebuffer and AGX regions (see stage2_policy).
+        Returns the computed AboveRamPolicy so callers and tests can audit it.
+        """
+        video = self.tba.video
+        video_size = video.stride * video.height if video.base else 0
+        policy = above_ram_policy(self.u.adt, mem_top, dram_end,
+                                  video_base=video.base, video_size=video_size)
+        print(f"Isolating DRAM above guest RAM [{mem_top:#x}..{dram_end:#x})...")
+        for r in policy.keep:
+            print(f"  Keep  [{r.start:#x}..{r.end - 1:#x}] {r.label}")
+        for r in policy.exclude:
+            print(f"  Unmap [{r.start:#x}..{r.end - 1:#x}] {r.label}")
+            self.del_tracer(irange(r.start, r.size), "RAM-HIGH")
+        return policy
+
     def enable_time_stealing(self):
         self.p.hv_set_time_stealing(True)
 
@@ -2099,7 +2118,8 @@ class HV(Reloadable):
         self.p.hv_set_time_stealing(False)
 
 
-    def load_raw(self, image, entryoffset=0x800, use_xnu_symbols=False, vmin=0):
+    def load_raw(self, image, entryoffset=0x800, use_xnu_symbols=False, vmin=0,
+                 isolate_above_ram=None):
         sepfw_start, sepfw_length = self.u.adt["chosen"]["memory-map"].SEPFW
         tc_start, tc_size = self.u.adt["chosen"]["memory-map"].TrustCache
         if hasattr(self.u.adt["chosen"]["memory-map"], "preoslog"):
@@ -2139,6 +2159,15 @@ class HV(Reloadable):
         self.add_tracer(irange(self.ram_base, self.u.ba.phys_base - self.ram_base), "RAM-LOW", TraceMode.OFF)
         self.add_tracer(irange(phys_base, self.u.ba.mem_size_actual - phys_base + self.ram_base), "RAM-HIGH", TraceMode.OFF)
         self.unmap_carveouts()
+        # Default off: an XNU guest owns DCP and legitimately maps these carveouts.
+        # WOM1_HV_ISOLATE_ABOVE_RAM=1 (or isolate_above_ram=True) is for guests that do
+        # not own DCP/DART, e.g. the J313 Windows guest launched by run_uefi.py.
+        if isolate_above_ram is None:
+            isolate_above_ram = os.environ.get("WOM1_HV_ISOLATE_ABOVE_RAM", "0") == "1"
+        self.above_ram_policy = None
+        if isolate_above_ram:
+            self.above_ram_policy = self.unmap_above_ram(
+                mem_top, self.ram_base + self.u.ba.mem_size_actual)
 
         print(f"Loading kernel image (0x{len(image):x} bytes)...")
         self.u.compressed_writemem(guest_base, image, True)
