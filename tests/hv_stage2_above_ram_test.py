@@ -26,7 +26,8 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "proxyclient"))
 
-from m1n1.hv.stage2_policy import PAGE_SIZE, StagePolicyError, above_ram_policy  # noqa: E402
+from m1n1.hv.stage2_policy import (  # noqa: E402
+    PAGE_SIZE, StagePolicyError, above_ram_policy, assert_disjoint, in_ram_carveouts)
 
 FIXTURE = Path(__file__).parent / "data" / "j313_adt_above_ram.json"
 
@@ -237,7 +238,7 @@ class FakeProxy:
         return self.tz[idx][word // 8]
 
 
-def build_hv(fx, isolate, video_base=0x85f000000):
+def build_hv(fx, isolate, video_base=0x85f000000, ram_carveouts=False):
     from m1n1.hv import HV
     from m1n1.utils import irange
 
@@ -264,6 +265,8 @@ def build_hv(fx, isolate, video_base=0x85f000000):
     policy = None
     if isolate:
         policy = hv.unmap_above_ram(mem_top, ram_base + u.ba.mem_size_actual)
+    if ram_carveouts:
+        hv.unmap_ram_carveouts(phys_base, mem_top, occupied=dict(LAYOUT_OK))
     hv.pt_update()
     return hv, p, policy
 
@@ -337,6 +340,114 @@ def test_hv_default_is_legacy():
     assert 'os.environ.get("WOM1_HV_ISOLATE_ABOVE_RAM", "0") == "1"' in body
     assert body.index("self.unmap_carveouts()") < body.index("self.unmap_above_ram(")
     assert body.index('"RAM-HIGH", TraceMode.OFF)') < body.index("self.unmap_above_ram(")
+
+
+# ------------------------------------------------------------------ carveouts inside RAM
+
+GUEST_RAM = (0x850000000, 0x9df708000)  # config/j313-guest-layout.json phys_base .. mem_top
+# Launcher-owned windows from config/j313-guest-layout.json (parent repository).
+LAYOUT_OK = {
+    "adt": (0x851000000, 0x851000000 + 0xb4000),
+    "firmware": (0x8510b4000, 0x8510b4000 + 0x1e00000),
+    "boot args": (0x8533e8000, 0x8533e8000 + 0x4000),
+    "virtual framebuffer": (0x85f000000, 0x85f000000 + 10240 * 1600),
+    "ramdisk header page": (0x860000000, 0x860001000),
+    "low-memory backing": (0x8a0100000, 0x8a0100000 + 0x3ff00000),
+}
+IN_RAM_IDS = {19, 23, 158, 159, 163, 165, 167, 176, 179, 180, 181, 182, 190}
+
+
+def test_in_ram_carveouts_exact_ranges():
+    fx = load_fixture()
+    got = in_ram_carveouts(FakeAdt(fx), *GUEST_RAM)
+    exact = in_ram_carveouts(FakeAdt(fx), *GUEST_RAM, merge_gap=0)
+    assert [(r.start, r.end) for r in exact] == [
+        (0x860500000, 0x8614a0000),  # 19
+        (0x864000000, 0x86bc04000),  # 23 + 158 + 167
+        (0x86bc08000, 0x86bc48000),  # 163
+        (0x86bc4c000, 0x86c08c000),  # 165
+        (0x86c090000, 0x86d090000),  # 159
+        (0x86d094000, 0x86f518000),  # 181 190 182 176 180 179
+    ], exact
+    assert sum(r.size for r in exact) == 0xc4a8000
+    # Default: the four 16 KiB RAM gaps inside 0x864000000..0x86f518000 are absorbed.
+    assert [(r.start, r.end) for r in got] == [
+        (0x860500000, 0x8614a0000),
+        (0x864000000, 0x86f518000),
+    ], got
+    assert sum(r.size for r in got) - sum(r.size for r in exact) == 4 * PAGE_SIZE
+    ids = {int(n.rsplit("-", 1)[1]) for r in got for n in r.label.split(",")}
+    assert ids == IN_RAM_IDS, ids
+
+
+def test_in_ram_carveouts_skip_kernel_dram_descriptor():
+    fx = load_fixture()
+    b, s = (int(v, 16) for v in fx["carveout_memory_map"]["region-id-24"])
+    # region-id-24 is exactly iBoot's boot-args kernel range and covers guest RAM.
+    assert (b, b + s) == (0x802078000, 0x9df708000)
+    for start in (0x850000000, 0x818000000):
+        got = in_ram_carveouts(FakeAdt(fx), start, GUEST_RAM[1])
+        assert all("region-id-24" not in r.label for r in got)
+        assert [(r.start, r.end) for r in got] == [
+            (r.start, r.end) for r in in_ram_carveouts(FakeAdt(fx), *GUEST_RAM)]
+
+
+def test_current_layout_windows_avoid_carveouts():
+    fx = load_fixture()
+    assert_disjoint(in_ram_carveouts(FakeAdt(fx), *GUEST_RAM), LAYOUT_OK)
+
+
+def test_preloaded_ramdisk_window_conflicts_with_carveouts():
+    fx = load_fixture()
+    ranges = in_ram_carveouts(FakeAdt(fx), *GUEST_RAM)
+    try:
+        assert_disjoint(ranges, {"ramdisk": (0x860000000, 0x8a0000000)})
+    except StagePolicyError as e:
+        assert "region-id-19" in str(e)
+        return
+    raise AssertionError("a --ramdisk payload over the carveouts must be refused")
+
+
+def test_hv_ram_carveouts_unmapped_rest_of_ram_unchanged():
+    fx = load_fixture()
+    lo, hi = GUEST_RAM
+    _, legacy, _ = build_hv(fx, isolate=False)
+    _, p, _ = build_hv(fx, isolate=False, ram_carveouts=True)
+    ranges = in_ram_carveouts(FakeAdt(fx), lo, hi)
+    for r in ranges:
+        for page in (r.start, r.end - PAGE_SIZE):
+            assert resolve(p.calls, page) == ("unmapped", None), hex(page)
+    for page in (0x86bc04000, 0x86bc48000, 0x86c08c000, 0x86d090000):  # absorbed gaps
+        assert resolve(p.calls, page) == ("unmapped", None), hex(page)
+    for page in (lo, 0x8604fc000, 0x8614a0000, 0x863ffc000, 0x86f518000, hi - PAGE_SIZE):
+        assert resolve(p.calls, page) == resolve(legacy.calls, page) == ("hw", page), hex(page)
+
+
+def test_hv_both_policies_fit_launch_contract_receipt():
+    fx = load_fixture()
+    lo, hi = GUEST_RAM
+    _, legacy, _ = build_hv(fx, isolate=False)
+    _, p, _ = build_hv(fx, isolate=True, ram_carveouts=True)
+    extra = len(window_calls(p.calls, lo, 0xa00000000)) - len(
+        window_calls(legacy.calls, lo, 0xa00000000))
+    assert 51 + extra <= 64, extra
+
+
+def test_hv_ram_carveouts_refuse_conflicting_window():
+    fx = load_fixture()
+    try:
+        hv, _, _ = build_hv(fx, isolate=False)
+        hv.unmap_ram_carveouts(*GUEST_RAM, occupied={"ramdisk": (0x860000000, 0x8a0000000)})
+    except StagePolicyError:
+        return
+    raise AssertionError("conflict not refused")
+
+
+def test_hv_ram_carveouts_default_off_and_ordered():
+    src = (ROOT / "proxyclient/m1n1/hv/__init__.py").read_text()
+    body = src[src.index("    def load_raw("):src.index("        print(f\"Loading kernel image")]
+    assert 'os.environ.get("WOM1_HV_UNMAP_RAM_CARVEOUTS", "0") == "1"' in body
+    assert body.index('"RAM-HIGH", TraceMode.OFF)') < body.index("self.unmap_ram_carveouts(")
 
 
 def test_fixture_matches_saved_adt_when_available():

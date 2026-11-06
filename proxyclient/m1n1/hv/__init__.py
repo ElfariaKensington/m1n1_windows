@@ -15,7 +15,7 @@ from .gdbserver import *
 from .types import *
 from .virtutils import *
 from .virtio import *
-from .stage2_policy import above_ram_policy
+from .stage2_policy import above_ram_policy, assert_disjoint, in_ram_carveouts
 
 __all__ = ["HV"]
 
@@ -2111,6 +2111,22 @@ class HV(Reloadable):
             self.del_tracer(irange(r.start, r.size), "RAM-HIGH")
         return policy
 
+    def unmap_ram_carveouts(self, ram_start, ram_end, occupied=None):
+        """Remove iBoot carveouts inside guest RAM from the RAM-HIGH pass-through.
+
+        The guest firmware must also withhold these ranges from the OS (Mu reserves
+        them, or the whole ramdisk window); otherwise the OS allocates a page that
+        then aborts to EL2.  ``occupied`` windows written by the launcher must be
+        disjoint from every carveout.
+        """
+        ranges = in_ram_carveouts(self.u.adt, ram_start, ram_end)
+        assert_disjoint(ranges, occupied or {})
+        print(f"Unmapping iBoot carveouts inside guest RAM [{ram_start:#x}..{ram_end:#x})...")
+        for r in ranges:
+            print(f"  Unmap [{r.start:#x}..{r.end - 1:#x}] {r.label}")
+            self.del_tracer(irange(r.start, r.size), "RAM-HIGH")
+        return ranges
+
     def enable_time_stealing(self):
         self.p.hv_set_time_stealing(True)
 
@@ -2168,6 +2184,13 @@ class HV(Reloadable):
         if isolate_above_ram:
             self.above_ram_policy = self.unmap_above_ram(
                 mem_top, self.ram_base + self.u.ba.mem_size_actual)
+        # Separate variable: only valid with guest firmware that withholds these
+        # ranges from the OS (WOM1_HV_UNMAP_RAM_CARVEOUTS=1).
+        self.ram_carveouts = None
+        if os.environ.get("WOM1_HV_UNMAP_RAM_CARVEOUTS", "0") == "1":
+            self.ram_carveouts = self.unmap_ram_carveouts(
+                phys_base, mem_top,
+                occupied={"guest image": (self.adt_base, guest_base + image_size)})
 
         print(f"Loading kernel image (0x{len(image):x} bytes)...")
         self.u.compressed_writemem(guest_base, image, True)

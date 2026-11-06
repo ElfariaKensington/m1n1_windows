@@ -31,6 +31,8 @@ __all__ = [
     "above_ram_policy",
     "carveout_regions",
     "carveouts_overlapping",
+    "in_ram_carveouts",
+    "assert_disjoint",
 ]
 
 
@@ -205,3 +207,50 @@ def above_ram_policy(adt, mem_top, dram_end, video_base=None, video_size=None):
         labelled.append(Stage2Range(r.start, r.end, ",".join(ids) if ids else "no-carveout"))
 
     return AboveRamPolicy(window, tuple(keep), tuple(labelled))
+
+
+# --------------------------------------------------------------------------- in-RAM carveouts
+
+
+def in_ram_carveouts(adt, ram_start, ram_end, merge_gap=PAGE_SIZE):
+    """iBoot carveouts that intersect guest RAM ``[ram_start, ram_end)``.
+
+    A carveout that covers the whole guest window is the iBoot kernel-DRAM descriptor
+    (region-id-24 on J313, equal to boot-args [phys_base, mem_top)), not a reservation,
+    and is skipped.  The rest are clipped to the window, widened to 16 KiB pages and
+    merged; labels list the contributing region ids.  Owners are not named in the ADT,
+    so every such carveout is treated as not guest RAM.
+
+    Ranges separated by at most ``merge_gap`` bytes of RAM are merged (the gap is lost
+    to the guest): each separate range costs two stage-2 records and the launch-contract
+    receipt holds 64.  Guest firmware must withhold a superset of the result from the OS.
+    """
+    if ram_start % PAGE_SIZE or ram_end % PAGE_SIZE or ram_start >= ram_end:
+        raise StagePolicyError(f"bad guest RAM window [{ram_start:#x}..{ram_end:#x})")
+    hits = []
+    for name, (base, size) in carveout_regions(adt).items():
+        end = base + size
+        if base <= ram_start and ram_end <= end:
+            continue
+        start = max(_align_down(base), ram_start)
+        stop = min(_align_up(end), ram_end)
+        if start < stop:
+            hits.append((start, stop, name))
+    hits.sort()
+    merged = []
+    for start, stop, name in hits:
+        if merged and start <= merged[-1].end + merge_gap:
+            last = merged[-1]
+            merged[-1] = Stage2Range(last.start, max(last.end, stop), last.label + "," + name)
+        else:
+            merged.append(Stage2Range(start, stop, name))
+    return tuple(merged)
+
+
+def assert_disjoint(ranges, occupied):
+    """Raise if any launcher-owned window (name -> (start, end)) hits a carveout."""
+    for name, (start, end) in occupied.items():
+        for r in ranges:
+            if start < r.end and r.start < end:
+                raise StagePolicyError(
+                    f"{name} [{start:#x}..{end:#x}) overlaps carveout {r}")
