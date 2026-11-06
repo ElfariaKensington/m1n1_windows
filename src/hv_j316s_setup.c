@@ -4,31 +4,46 @@
 #include "hv_j316s_setup.h"
 
 #include "adt.h"
+#include "aic.h"
 #include "arm_cpu_regs.h"
 #include "cpu_regs.h"
+#include "dart.h"
 #include "fb.h"
 #include "heapblock.h"
 #include "hv.h"
+#include "hv_apple_input.h"
+#include "hv_irq_routes.h"
 #include "hv_stage2_state.h"
 #include "hv_vgic_redist.h"
+#include "hv_xhci_handoff.h"
 #include "mcc.h"
 #include "memory.h"
+#include "pmgr.h"
 #include "smp.h"
 #include "soc.h"
 #include "string.h"
 #include "tinf/tinf.h"
+#include "usb.h"
+#include "usb_dwc3_regs.h"
 #include "utils.h"
 #include "xnuboot.h"
 
-#define FRAME_WIDTH 1280u
-#define FRAME_HEIGHT 720u
+/* One guest pixel covers a 2-by-2 block on the 3456-by-2234 J316s panel. */
+#define FRAME_WIDTH ((u32)J316S_SETUP_FB_WIDTH)
+#define FRAME_HEIGHT ((u32)J316S_SETUP_FB_HEIGHT)
 #define FRAME_STRIDE (FRAME_WIDTH * 4u)
-#define FRAME_SIZE (FRAME_HEIGHT * FRAME_STRIDE)
 #define EL2_HEAP_HEADROOM (512ULL * 1024 * 1024)
 
 static u64 backing;
 static u64 next_frame_tick;
 static bool draw_setup;
+static bool frame_seen;
+static bool owns_usb;
+
+bool hv_j316s_setup_owns_usb(void)
+{
+    return owns_usb;
+}
 
 static void *guest_ptr(u64 ipa)
 {
@@ -98,9 +113,9 @@ static void write_boot_args(void)
     dc_civac_range(guest_ptr(J316S_SETUP_BOOT_ARGS), sizeof(guest));
 }
 
-static bool verify_mappings(void)
+static bool verify_mappings(bool usb, bool input, bool storage)
 {
-    const struct hv_stage2_mapping allowed[] = {
+    struct hv_stage2_mapping allowed[] = {
         {J316S_SETUP_GIC_DIST, 0, 0x10000, 0, HV_STAGE2_MAPPING_HOOK},
         {J316S_SETUP_GIC_REDIST, 0, HV_VGIC_T6000_CPU_COUNT * HV_VGIC_REDIST_STRIDE,
          0, HV_STAGE2_MAPPING_HOOK},
@@ -109,19 +124,214 @@ static bool verify_mappings(void)
         {J316S_SETUP_LOW_IPA, (u64)guest_ptr(J316S_SETUP_LOW_BACKING),
          J316S_SETUP_LOW_SIZE, 1, HV_STAGE2_MAPPING_HARDWARE},
         {J316S_SETUP_UART, 0, 0x2000, 0, HV_STAGE2_MAPPING_HOOK},
+        {J316S_SETUP_XHCI, 0, J316S_SETUP_XHCI_SIZE, 0, HV_STAGE2_MAPPING_HOOK},
+        {J316S_SETUP_INPUT_SPI, 0, SZ_16K, 0, HV_STAGE2_MAPPING_HOOK},
+        {J316S_SETUP_INPUT_AP_GPIO, 0, SZ_16K, 0, HV_STAGE2_MAPPING_HOOK},
+        {J316S_SETUP_INPUT_NUB_GPIO, 0, SZ_16K, 0, HV_STAGE2_MAPPING_HOOK},
+        {J316S_SETUP_ECAM, 0, J316S_SETUP_ECAM_SIZE, 0, HV_STAGE2_MAPPING_HOOK},
     };
-    return hv_stage2_state_matches(allowed, ARRAY_SIZE(allowed));
+    size_t count = ARRAY_SIZE(allowed) - 1 - 3 * !input - !usb;
+    if (storage)
+        allowed[count++] = allowed[ARRAY_SIZE(allowed) - 1];
+    return hv_stage2_state_matches(allowed, count);
 }
 
-void hv_j316s_setup_draw(void)
+static bool input_mmio(struct exc_info *ctx, u64 addr, u64 *val, bool write, int width)
+{
+    /* Restrict the two GPIO controllers to SPI enable, input IRQ and its W1C
+     * bit. All other pins and the other interrupt groups stay with the host. */
+    const u64 ap_pin = J316S_SETUP_INPUT_AP_GPIO + 4 * 194;
+    const u64 nub_pin = J316S_SETUP_INPUT_NUB_GPIO + 4 * 6;
+    const u64 nub_ack = J316S_SETUP_INPUT_NUB_GPIO + 0x800;
+    if (width != 2)
+        return false;
+    if (addr == ap_pin || addr == nub_pin) {
+        if (!write)
+            return hv_pa_rw(ctx, addr, val, false, width);
+        u32 mask = addr == ap_pin ? 0xf : (0xf | (3 << 5) | BIT(9) | (7 << 16));
+        u64 old;
+        if (!hv_pa_rw(ctx, addr, &old, false, width))
+            return false;
+        u64 data = (old & ~mask) | (*val & mask);
+        if (addr == nub_pin)
+            data &= ~(7u << 16); /* The only routed GPIO group is group zero. */
+        return hv_pa_rw(ctx, addr, &data, true, width);
+    }
+    if (addr == nub_ack)
+        return write && *val == BIT(6) && hv_pa_rw(ctx, addr, val, true, width);
+    if (addr < J316S_SETUP_INPUT_SPI || addr >= J316S_SETUP_INPUT_SPI + SZ_16K)
+        return false;
+    /* PIO registers used by AppleInput. SPI DMA and other registers are absent. */
+    switch (addr - J316S_SETUP_INPUT_SPI) {
+        case 0x000: case 0x004: case 0x00c: case 0x010: case 0x020:
+        case 0x030: case 0x034: case 0x04c: case 0x10c: case 0x130:
+        case 0x134: case 0x138: case 0x13c: case 0x150: case 0x154:
+        case 0x160: case 0x168:
+            return hv_pa_rw(ctx, addr, val, write, width);
+    }
+    return false;
+}
+
+static bool prepare_input(void)
+{
+    struct hv_apple_input_observed input;
+    if (!hv_apple_input_observe_adt(&input) || !input.spi_compatible || !input.hid_compatible ||
+        input.spi_base != J316S_SETUP_INPUT_SPI || input.spi_size != SZ_16K ||
+        input.ap_gpio_base != J316S_SETUP_INPUT_AP_GPIO || input.ap_gpio_size != SZ_16K ||
+        input.nub_gpio_base != J316S_SETUP_INPUT_NUB_GPIO || input.nub_gpio_size != SZ_16K ||
+        input.ap_gpio_pin != 194 || input.nub_gpio_pin != 6 || input.parent_irq != 623)
+        return false;
+    aic_set_mask(input.parent_irq, true);
+    /* The AP/Nub GPIO pin controllers are inherited live from firmware and
+     * their J316s ADT nodes do not expose PMGR clock-gates. Preserve that
+     * state and power only SPI3, whose ADT entry owns the required gate. */
+    if (pmgr_adt_power_enable("/arm-io/spi3") < 0 ||
+        !hv_irq_route_register(input.parent_irq, J316S_SETUP_INPUT_VINTID, true) ||
+        hv_map_hook(J316S_SETUP_INPUT_SPI, input_mmio, SZ_16K) ||
+        hv_map_hook(J316S_SETUP_INPUT_AP_GPIO, input_mmio, SZ_16K) ||
+        hv_map_hook(J316S_SETUP_INPUT_NUB_GPIO, input_mmio, SZ_16K))
+        return false;
+    return verify_mappings(true, true, false);
+}
+
+static bool xhci_mmio(struct exc_info *ctx, u64 addr, u64 *val, bool write, int width)
+{
+    u64 offset = addr - J316S_SETUP_XHCI;
+    if (width < 0 || width > 3 || offset >= J316S_SETUP_XHCI_SIZE ||
+        (1ULL << width) > J316S_SETUP_XHCI_SIZE - offset)
+        return false;
+    if (!hv_pa_rw(ctx, addr, val, write, width))
+        return false;
+    if (!write)
+        *val = hv_xhci_cap_read_for_guest(offset, *val, width);
+    return true;
+}
+
+static bool usb_reg_matches(const char *path, int index, u64 expected, u64 min_size)
+{
+    int trace[8];
+    u64 base, size;
+    return adt_path_offset_trace(adt, path, trace) >= 0 &&
+           adt_get_reg(adt, trace, "reg", index, &base, &size) >= 0 &&
+           base == expected && size >= min_size;
+}
+
+static bool prepare_usb(void)
+{
+    const char *controller = "/arm-io/usb-drd1";
+    const char *darts = "/arm-io/dart-usb1";
+    const u64 base = J316S_SETUP_XHCI;
+    const u64 dart0 = 0xb02f00000ULL;
+    const u64 dart1 = 0xb02f80000ULL;
+    int node = adt_path_offset(adt, controller);
+    int dart_node = adt_path_offset(adt, darts);
+    u32 irq_size = 0;
+    const u32 *irqs = node < 0 ? NULL : adt_getprop(adt, node, "interrupts", &irq_size);
+    if (!irqs || irq_size < sizeof(*irqs) || irqs[0] != J316S_SETUP_XHCI_AIC_IRQ ||
+        !adt_is_compatible(adt, node, "usb-drd,t6000") || dart_node < 0 ||
+        !adt_is_compatible(adt, dart_node, "dart,t6000") ||
+        !usb_reg_matches(controller, 0, base, 0xcd44) ||
+        !usb_reg_matches(controller, 2, base + 0xc000, 0xd44) ||
+        !usb_reg_matches(darts, 0, dart0, SZ_16K) ||
+        !usb_reg_matches(darts, 1, dart1, SZ_16K) ||
+        iodev_get_usage(IODEV_USB0 + 1))
+        return false;
+
+    owns_usb = true;
+    aic_set_mask(J316S_SETUP_XHCI_AIC_IRQ, true);
+    if (usb_phy_bringup(1) < 0)
+        return false;
+
+    /* Aurora's USB2 host initialization uses the existing ATC PHY and resets
+     * the Synopsys core and PHYs before switching to host mode. */
+    if ((read32(base + DWC3_GSNPSID) & DWC3_GSNPSID_MASK) != 0x33310000)
+        return false;
+    set32(base + DWC3_GCTL, DWC3_GCTL_CORESOFTRESET);
+    set32(base + DWC3_GUSB2PHYCFG(0), DWC3_GUSB2PHYCFG_PHYSOFTRST);
+    set32(base + DWC3_GUSB3PIPECTL(0), DWC3_GUSB3PIPECTL_PHYSOFTRST);
+    sysop("dsb sy");
+    mdelay(100);
+
+    u64 low_pa = (u64)guest_ptr(J316S_SETUP_LOW_BACKING);
+    if (!dart_t6000_map_exclusive(dart0, 0, J316S_SETUP_LOW_IPA, low_pa, J316S_SETUP_LOW_SIZE) ||
+        !dart_t6000_map_exclusive(dart1, 1, J316S_SETUP_LOW_IPA, low_pa, J316S_SETUP_LOW_SIZE))
+        return false;
+
+    clear32(base + DWC3_GUSB2PHYCFG(0), DWC3_GUSB2PHYCFG_PHYSOFTRST);
+    clear32(base + DWC3_GUSB3PIPECTL(0), DWC3_GUSB3PIPECTL_PHYSOFTRST);
+    sysop("dsb sy");
+    mdelay(100);
+    write32(base + 0xcd38, 0x0f800f80);
+    write32(base + 0xcd3c, 0x0fc00fc0);
+    mask32(base + 0xcd40, 0x00ffffff, 0x00140a10);
+    mask32(base + DWC3_GSBUSCFG0, 0xff, 0x0f);
+    set32(base + DWC3_GSBUSCFG1, 0xf00);
+    set32(base + 0xc630, 0xa0); /* DWC3 frame-length adjustment */
+    u32 control = read32(base + DWC3_GCTL);
+    control &= ~(DWC3_GCTL_CORESOFTRESET | DWC3_GCTL_SCALEDOWN_MASK |
+                 DWC3_GCTL_DISSCRAMBLE | DWC3_GCTL_PRTCAPDIR(DWC3_GCTL_PRTCAP_OTG));
+    if (DWC3_GHWPARAMS1_EN_PWROPT(read32(base + DWC3_GHWPARAMS1)) ==
+        DWC3_GHWPARAMS1_EN_PWROPT_CLK)
+        control &= ~DWC3_GCTL_DSBLCLKGTNG;
+    write32(base + DWC3_GCTL, control | DWC3_GCTL_PRTCAPDIR(DWC3_GCTL_PRTCAP_HOST));
+    sysop("dsb sy");
+
+    u32 caps = read32(base);
+    if ((caps & 0xff) < 0x20 || caps >> 16 < 0x100 ||
+        !hv_irq_route_register(J316S_SETUP_XHCI_AIC_IRQ, J316S_SETUP_XHCI_VINTID, true) ||
+        hv_map_hook(base, xhci_mmio, J316S_SETUP_XHCI_SIZE) ||
+        !verify_mappings(true, false, false)) {
+        set32(base + DWC3_GCTL, DWC3_GCTL_CORESOFTRESET);
+        return false;
+    }
+    printf("J316s Setup: USB-C left front xHCI enabled with guest-only DMA\n");
+    return true;
+}
+
+static void dump_stage2_mappings(void)
+{
+    struct hv_stage2_mapping mappings[HV_STAGE2_STATE_MAX_MAPPINGS];
+    size_t count = 0;
+
+    if (!hv_stage2_state_snapshot(mappings, ARRAY_SIZE(mappings), &count)) {
+        printf("J316s Setup: stage-2 mapping snapshot unavailable\n");
+        return;
+    }
+
+    printf("J316s Setup: observed %lu stage-2 mappings\n", (u64)count);
+    for (size_t index = 0; index < count; index++) {
+        printf("J316s Setup: map[%lu] ipa=0x%lx pa=0x%lx size=0x%lx incr=%lu kind=%u\n",
+               (u64)index, mappings[index].ipa, mappings[index].pa,
+               mappings[index].size, mappings[index].increment, mappings[index].kind);
+    }
+}
+
+void hv_j316s_setup_draw(u64 guest_pc)
 {
     if (!draw_setup || smp_id() != boot_cpu_idx || get_ticks() < next_frame_tick)
         return;
 
+    if (!next_frame_tick)
+        printf("J316s Setup: first guest timer tick pc=0x%lx\n", guest_pc);
     next_frame_tick = get_ticks() + mrs(CNTFRQ_EL0) / 4;
-    fb_blit((fb.width - FRAME_WIDTH) / 2, (fb.height - FRAME_HEIGHT) / 2,
-            FRAME_WIDTH, FRAME_HEIGHT, guest_ptr(J316S_SETUP_FB),
-            FRAME_WIDTH, PIX_FMT_XBGR);
+    const volatile u32 *pixels = guest_ptr(J316S_SETUP_FB);
+    if (!frame_seen) {
+        for (size_t index = 0; index < FRAME_WIDTH * FRAME_HEIGHT; index++) {
+            if (pixels[index] & 0x00ffffff) {
+                frame_seen = true;
+                break;
+            }
+        }
+        if (!frame_seen)
+            return;
+        fb_set_active(false);
+        fb_fill(0, 0, fb.width, fb.height, (rgb_t){0});
+    }
+    u32 scale = fb.width >= 2 * FRAME_WIDTH && fb.height >= 2 * FRAME_HEIGHT ? 2 : 1;
+    fb_blit_scaled((fb.width - FRAME_WIDTH * scale) / 2,
+                   (fb.height - FRAME_HEIGHT * scale) / 2,
+                   FRAME_WIDTH, FRAME_HEIGHT, guest_ptr(J316S_SETUP_FB),
+                   FRAME_WIDTH, PIX_FMT_XBGR, scale);
 }
 
 bool hv_j316s_setup_run(void)
@@ -135,7 +345,12 @@ bool hv_j316s_setup_run(void)
     const struct j316s_setup_header *header = (const void *)_payload_start;
     const u64 fixed_size = J316S_SETUP_PAYLOAD_OFFSET + J316S_SETUP_FIRMWARE_SIZE;
     u64 size_available = cur_boot_args.top_of_kernel_data - (u64)_payload_start;
-    if (header->reserved || size_available < fixed_size ||
+    bool usb = header->flags & J316S_SETUP_USB_FLAG;
+    bool input = header->flags & J316S_SETUP_INPUT_FLAG;
+    bool storage = header->flags & J316S_SETUP_STORAGE_FLAG;
+    if ((header->flags & ~(J316S_SETUP_USB_FLAG | J316S_SETUP_INPUT_FLAG |
+                          J316S_SETUP_STORAGE_FLAG)) ||
+        ((input || storage) && !usb) || size_available < fixed_size ||
         header->media_size < SZ_1M || header->media_size % 512 ||
         header->media_size > J316S_SETUP_RAMDISK_SIZE - J316S_SETUP_RAMDISK_HEADER_SIZE ||
         header->media_size > size_available - fixed_size) {
@@ -173,13 +388,41 @@ bool hv_j316s_setup_run(void)
     memcpy128((u8 *)ramdisk + J316S_SETUP_RAMDISK_HEADER_SIZE, (void *)media, header->media_size);
     dc_civac_range(ramdisk, J316S_SETUP_RAMDISK_HEADER_SIZE + header->media_size);
 
-    if (!hv_init_j316s_setup() ||
-        hv_map_hw(J316S_SETUP_RAM_BASE, backing, J316S_SETUP_RAM_SIZE) ||
-        hv_map_hw(J316S_SETUP_LOW_IPA, (u64)guest_ptr(J316S_SETUP_LOW_BACKING),
-                  J316S_SETUP_LOW_SIZE) ||
-        !hv_map_vuart(J316S_SETUP_UART, 0, IODEV_UART) ||
-        !verify_mappings()) {
+    if (!hv_init_j316s_setup()) {
+        printf("J316s Setup: isolated hypervisor initialization failed\n");
+        return false;
+    }
+
+    int ram_map_result = hv_map_hw(J316S_SETUP_RAM_BASE, backing, J316S_SETUP_RAM_SIZE);
+    int low_map_result = hv_map_hw(J316S_SETUP_LOW_IPA,
+                                   (u64)guest_ptr(J316S_SETUP_LOW_BACKING),
+                                   J316S_SETUP_LOW_SIZE);
+    bool uart_map_result = hv_map_vuart(J316S_SETUP_UART, 0, IODEV_UART);
+    bool mappings_match = !ram_map_result && !low_map_result && uart_map_result &&
+                          verify_mappings(false, false, false);
+    if (ram_map_result || low_map_result || !uart_map_result || !mappings_match) {
+        printf("J316s Setup: map results ram=%d low=%d uart=%u allowlist=%u\n",
+               ram_map_result, low_map_result, uart_map_result, mappings_match);
+        dump_stage2_mappings();
         printf("J316s Setup: isolated mappings failed\n");
+        return false;
+    }
+
+    if (usb && !prepare_usb()) {
+        printf("J316s Setup: USB preflight failed; guest not started\n");
+        return false;
+    }
+    if (input && !prepare_input()) {
+        set32(J316S_SETUP_XHCI + DWC3_GCTL, DWC3_GCTL_CORESOFTRESET);
+        printf("J316s Setup: Apple input preflight failed; guest not started\n");
+        return false;
+    }
+    if (storage &&
+        (!hv_pci_init_windows_slice(J316S_SETUP_ECAM, J316S_SETUP_NVME_BAR,
+                                    J316S_SETUP_NVME_INTID) ||
+         !verify_mappings(true, input, true))) {
+        set32(J316S_SETUP_XHCI + DWC3_GCTL, DWC3_GCTL_CORESOFTRESET);
+        printf("J316s Setup: bounded Windows disk unavailable; guest not started\n");
         return false;
     }
 
@@ -189,9 +432,11 @@ bool hv_j316s_setup_run(void)
     sysop("isb");
     u64 regs[4] = {J316S_SETUP_BOOT_ARGS, 0, 0, 0};
     printf("J316s Setup: entering RAM-backed guest\n");
-    fb_set_active(false);
+    next_frame_tick = 0;
+    frame_seen = false;
     draw_setup = true;
     hv_start((void *)J316S_SETUP_FIRMWARE, regs);
     draw_setup = false;
+    fb_set_active(true);
     return true;
 }
