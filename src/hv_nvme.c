@@ -57,6 +57,7 @@ static u64 backend_blocks;
 static u64 backend_minimum_bytes;
 static struct hv_nvme_disk_slice backend_slice;
 static bool backend_bounded;
+static bool backend_installation;
 static struct vnvme_intx_delivery irq_delivery;
 static u32 nvme_trace_budget;
 static struct vnvme_ctrl queue_ctrl;
@@ -346,10 +347,11 @@ static bool read_physical_gpt(u64 lba, void *block)
     return nvme_read(1, lba, block);
 }
 
-static bool init_backend(bool bounded, u64 minimum_bytes)
+static bool init_backend(bool bounded, u64 minimum_bytes, bool installation)
 {
     if (backend_ready)
-        return backend_bounded == bounded && backend_minimum_bytes == minimum_bytes;
+        return backend_bounded == bounded && backend_minimum_bytes == minimum_bytes &&
+               backend_installation == installation;
     if (!nvme_init()) {
         printf("HV: NVMe backend: Apple ANS initialization failed\n");
         return false;
@@ -371,9 +373,10 @@ static bool init_backend(bool bounded, u64 minimum_bytes)
         void *scratch = memalign(HV_NVME_GPT_BLOCK_SIZE, HV_NVME_GPT_SCRATCH_SIZE);
         if (!scratch)
             return false;
-        bool found = hv_nvme_gpt_find_windows_minimum(
-            disk_blocks, read_physical_gpt, scratch, &backend_slice,
-            minimum_bytes / HV_NVME_GPT_BLOCK_SIZE);
+        bool found = installation ? hv_nvme_gpt_find_j316s_install(
+            disk_blocks, read_physical_gpt, scratch, &backend_slice) :
+            hv_nvme_gpt_find_windows_minimum(disk_blocks, read_physical_gpt, scratch,
+                &backend_slice, minimum_bytes / HV_NVME_GPT_BLOCK_SIZE);
         free(scratch);
         if (!found) {
             printf("HV: NVMe backend: no verified Windows slice\n");
@@ -384,6 +387,7 @@ static bool init_backend(bool bounded, u64 minimum_bytes)
     }
     backend_blocks = backend_slice.blocks;
     backend_bounded = bounded;
+    backend_installation = installation;
     backend_minimum_bytes = minimum_bytes;
     backend_ready = true;
     printf("HV: NVMe backend: namespace 1, %lu x %u-byte blocks (%lu MiB)\n", backend_blocks,
@@ -393,17 +397,17 @@ static bool init_backend(bool bounded, u64 minimum_bytes)
 
 bool hv_nvme_init_backend(void)
 {
-    return init_backend(false, 0);
+    return init_backend(false, 0, false);
 }
 
 bool hv_nvme_init_windows_slice(void)
 {
-    return init_backend(true, 64ULL << 30);
+    return init_backend(true, 64ULL << 30, true);
 }
 
 bool hv_nvme_init_diagnostics_slice(void)
 {
-    return init_backend(true, 1ULL << 30);
+    return init_backend(true, 1ULL << 30, false);
 }
 
 static void reset_frontend(void)

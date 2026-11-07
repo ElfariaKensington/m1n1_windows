@@ -15,6 +15,8 @@ typedef uint64_t u64;
 #define HV_NVME_GPT_BLOCK_SIZE 4096u
 #define HV_NVME_GPT_TABLE_SIZE (128u * 1024)
 #define HV_NVME_GPT_SCRATCH_SIZE (HV_NVME_GPT_BLOCK_SIZE + 2 * HV_NVME_GPT_TABLE_SIZE)
+/* A separate role from the pre-existing diagnostics container. */
+#define HV_NVME_J316S_INSTALL_GUID "CBAE986F-5E92-48D2-AEF2-326CB78B01EB"
 
 struct hv_nvme_disk_slice {
     u64 first;
@@ -25,6 +27,8 @@ typedef bool (*hv_nvme_gpt_read_fn)(u64 lba, void *block);
 
 bool hv_nvme_gpt_find_windows(u64 disk_blocks, hv_nvme_gpt_read_fn read,
                              void *scratch, struct hv_nvme_disk_slice *slice);
+bool hv_nvme_gpt_find_j316s_install(u64 disk_blocks, hv_nvme_gpt_read_fn read,
+                                    void *scratch, struct hv_nvme_disk_slice *slice);
 bool hv_nvme_gpt_find_windows_minimum(u64 disk_blocks, hv_nvme_gpt_read_fn read,
                                       void *scratch, struct hv_nvme_disk_slice *slice,
                                       u64 minimum_blocks);

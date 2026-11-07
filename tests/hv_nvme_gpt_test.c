@@ -108,5 +108,29 @@ int main(void)
     entry[0] ^= 1;
     mirror_gpt();
     assert(!hv_nvme_gpt_find_windows(DISK_BLOCKS, read_disk, scratch, &slice));
+
+    /* Installation and diagnostics must coexist without ambiguous selection. */
+    static const u8 install_type[] = {
+        0x6f,0x98,0xae,0xcb,0x92,0x5e,0xd2,0x48,
+        0xae,0xf2,0x32,0x6c,0xb7,0x8b,0x01,0xeb,
+    };
+    memcpy(entry, install_type, 16);
+    set64(entry + 40, SLICE_END);
+    memcpy(overlap, windows_type, 16); overlap[16] = 3;
+    set64(overlap + 32, SLICE_END + 1);
+    set64(overlap + 40, DISK_BLOCKS - 6);
+    mirror_gpt();
+    assert(hv_nvme_gpt_find_j316s_install(DISK_BLOCKS, read_disk, scratch, &slice));
+    assert(slice.first == SLICE_START && slice.blocks == SLICE_END - SLICE_START + 1);
+    assert(hv_nvme_gpt_find_windows_minimum(DISK_BLOCKS, read_disk, scratch, &slice,
+                                           (1ULL << 30) / BLOCK));
+    assert(slice.first == SLICE_END + 1);
+    assert(!hv_nvme_gpt_find_windows(DISK_BLOCKS, read_disk, scratch, &slice));
+    memcpy(overlap, install_type, 16); mirror_gpt();
+    assert(!hv_nvme_gpt_find_j316s_install(DISK_BLOCKS, read_disk, scratch, &slice));
+    memset(overlap, 0, 128); entry[0] ^= 1; mirror_gpt();
+    assert(!hv_nvme_gpt_find_j316s_install(DISK_BLOCKS, read_disk, scratch, &slice));
+    memcpy(entry, install_type, 16); set64(entry + 40, SLICE_START + 100); mirror_gpt();
+    assert(!hv_nvme_gpt_find_j316s_install(DISK_BLOCKS, read_disk, scratch, &slice));
     return 0;
 }

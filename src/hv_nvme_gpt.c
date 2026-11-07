@@ -15,6 +15,10 @@ static const u8 windows_type[16] = {
     0x93, 0xf3, 0x8d, 0xec, 0xb1, 0x7f, 0x35, 0xe3,
 };
 static const u8 empty_guid[16];
+static const u8 j316s_install_type[16] = {
+    0x6f, 0x98, 0xae, 0xcb, 0x92, 0x5e, 0xd2, 0x48,
+    0xae, 0xf2, 0x32, 0x6c, 0xb7, 0x8b, 0x01, 0xeb,
+};
 
 struct gpt_header {
     u8 signature[8];
@@ -74,9 +78,9 @@ static bool read_table(u64 disk_blocks, bool backup, hv_nvme_gpt_read_fn read,
     return tinf_crc32(entries, size) == header->table_crc;
 }
 
-bool hv_nvme_gpt_find_windows_minimum(u64 disk_blocks, hv_nvme_gpt_read_fn read,
-                                      void *scratch, struct hv_nvme_disk_slice *slice,
-                                      u64 minimum_blocks)
+static bool find_type(u64 disk_blocks, hv_nvme_gpt_read_fn read, void *scratch,
+                       struct hv_nvme_disk_slice *slice, u64 minimum_blocks,
+                       const u8 type[16])
 {
     if (!slice)
         return false;
@@ -110,7 +114,7 @@ bool hv_nvme_gpt_find_windows_minimum(u64 disk_blocks, hv_nvme_gpt_read_fn read,
                 (entry->first <= other->last && other->first <= entry->last))
                 return false;
         }
-        if (!memcmp(entry->type, windows_type, sizeof(windows_type))) {
+        if (!memcmp(entry->type, type, 16)) {
             u64 blocks = entry->last - entry->first + 1;
             if (candidate.blocks || !minimum_blocks || blocks < minimum_blocks || entry->attributes)
                 return false;
@@ -121,6 +125,20 @@ bool hv_nvme_gpt_find_windows_minimum(u64 disk_blocks, hv_nvme_gpt_read_fn read,
         return false;
     *slice = candidate;
     return true;
+}
+
+bool hv_nvme_gpt_find_windows_minimum(u64 disk_blocks, hv_nvme_gpt_read_fn read,
+                                      void *scratch, struct hv_nvme_disk_slice *slice,
+                                      u64 minimum_blocks)
+{
+    return find_type(disk_blocks, read, scratch, slice, minimum_blocks, windows_type);
+}
+
+bool hv_nvme_gpt_find_j316s_install(u64 disk_blocks, hv_nvme_gpt_read_fn read,
+                                    void *scratch, struct hv_nvme_disk_slice *slice)
+{
+    return find_type(disk_blocks, read, scratch, slice,
+                     (64ULL << 30) / HV_NVME_GPT_BLOCK_SIZE, j316s_install_type);
 }
 
 bool hv_nvme_gpt_find_windows(u64 disk_blocks, hv_nvme_gpt_read_fn read,
