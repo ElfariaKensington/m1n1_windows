@@ -174,7 +174,8 @@ static bool verify_mappings(bool usb, bool input, bool storage)
     /* Stage-2 mappings are compared in creation order; the bridge is mapped last. */
     if (hv_j316s_wifi_mapped())
         allowed[count++] = (struct hv_stage2_mapping){
-            J316S_SETUP_WIFI_BASE, 0, J316S_SETUP_WIFI_SIZE, 0, HV_STAGE2_MAPPING_HOOK};
+            J316S_SETUP_WIFI_BASE, hv_j316s_wifi_window_pa(), J316S_SETUP_WIFI_SIZE, 1,
+            HV_STAGE2_MAPPING_HARDWARE};
     return hv_stage2_state_matches(allowed, count);
 }
 

@@ -8,6 +8,7 @@
 #include "aic.h"
 #include "dart.h"
 #include "hv.h"
+#include "heapblock.h"
 #include "hv_j316s_wifi.h"
 #include "malloc.h"
 #include "memory.h"
@@ -36,39 +37,29 @@ static u32 dma_used, io_error;
 static bool mapped, ready;
 static u64 next_poll;
 
+/* The bridge window is plain host memory mapped straight into the guest (no stage-2 trap).
+ * Windows maps it uncached, so EL2 must keep its cached view coherent: invalidate before it
+ * reads guest-written data, and write back immediately after it stores. The guest-written
+ * registers (TX_PROD, RX_CONS, COMMAND) share a cache line with host-written ones, so every
+ * register store drops the line first (fresh DRAM copy) and cleans it right after. */
+#define WIN_LINE 128u
+static void win_sync(const void *address, size_t size)
+{
+    u64 first = (u64)address & ~(u64)(WIN_LINE - 1);
+    u64 last = ((u64)address + size + WIN_LINE - 1) & ~(u64)(WIN_LINE - 1);
+    dc_civac_range((void *)first, last - first);
+    sysop("dsb sy");
+}
 static u32 load_reg(u32 offset)
 {
+    win_sync(window + offset, 4);
     return __atomic_load_n((u32 *)(window + offset), __ATOMIC_ACQUIRE);
 }
 static void store_reg(u32 offset, u32 value)
 {
+    win_sync(window + offset, 4);
     __atomic_store_n((u32 *)(window + offset), value, __ATOMIC_RELEASE);
-}
-static bool bridge_mmio(struct exc_info *ctx, u64 address, u64 *value, bool write, int width)
-{
-    (void)ctx;
-    u64 off = address - JW_BASE;
-    if (!window || width < 0 || width > 3 || off >= JW_SIZE ||
-        (1u << width) > JW_SIZE - off)
-        return false;
-    size_t bytes = 1u << width;
-    if (write) {
-        bool packet = off >= JW_TX_BASE && off + bytes <= JW_RX_BASE;
-        bool config = off >= JW_CONFIG_SSID_LEN && off + bytes <= JW_CONFIG_PSK + 64;
-        bool reg = bytes == 4 && !(off & 3) &&
-                   (off == JW_REG_TX_PROD || off == JW_REG_RX_CONS || off == JW_REG_COMMAND);
-        if (reg)
-            store_reg(off, (u32)*value);
-        else if (packet || config)
-            memcpy(window + off, value, bytes);
-    } else {
-        *value = 0;
-        if (bytes == 4 && !(off & 3) && off < 0x100)
-            *value = load_reg(off);
-        else
-            memcpy(value, window + off, bytes);
-    }
-    return true;
+    win_sync(window + offset, 4);
 }
 
 static void cfg_write(u32 offset, u32 value)
@@ -315,10 +306,15 @@ static bool dhcp_probe(void)
 }
 #endif
 bool hv_j316s_wifi_mapped(void) { return mapped; }
+u64 hv_j316s_wifi_window_pa(void) { return (u64)window; }
 bool hv_j316s_wifi_init(bool enable)
 {
-    window = calloc(1, JW_SIZE);
-    if (!window || hv_map_hook(JW_BASE, bridge_mmio, JW_SIZE))
+    window = heapblock_alloc_aligned(JW_SIZE, SZ_16K);
+    if (!window)
+        return false;
+    memset(window, 0, JW_SIZE);
+    win_sync(window, JW_SIZE);
+    if (hv_map_hw(JW_BASE, (u64)window, JW_SIZE))
         return false;
     mapped = true;
     store_reg(JW_REG_MAGIC, JW_MAGIC);
@@ -389,14 +385,18 @@ void hv_j316s_wifi_poll(void)
     store_reg(JW_REG_PHASE, bcm_wifi_phase());
     store_reg(JW_REG_ERROR, bcm_wifi_error());
     store_reg(JW_REG_STATUS, JW_STATUS_READY | (bcm_wifi_link() ? JW_STATUS_LINK : 0));
+    win_sync(window + JW_REG_COMMAND, 4);
     u32 cmd = __atomic_exchange_n((u32 *)(window + JW_REG_COMMAND), 0, __ATOMIC_ACQ_REL);
+    win_sync(window + JW_REG_COMMAND, 4);
     if (cmd == JW_COMMAND_JOIN) {
+        win_sync(window + JW_CONFIG_SSID_LEN, JW_CONFIG_PSK + 64 - JW_CONFIG_SSID_LEN);
         u32 ssid_len = load_reg(JW_CONFIG_SSID_LEN), psk_len = load_reg(JW_CONFIG_PSK_LEN);
         int error = -1;
         if (ssid_len && ssid_len <= 32 && psk_len >= 8 && psk_len <= 63)
             error = bcm_wifi_join(window + JW_CONFIG_SSID, ssid_len,
                                    window + JW_CONFIG_PSK, psk_len);
         memset(window + JW_CONFIG_PSK, 0, 64);
+        win_sync(window + JW_CONFIG_PSK, 64);
         store_reg(JW_REG_COMMAND_STATUS, error);
     }
     u32 tx = load_reg(JW_REG_TX_CONS), produced = load_reg(JW_REG_TX_PROD);
@@ -407,6 +407,7 @@ void hv_j316s_wifi_poll(void)
     }
     for (u32 n = 0; tx != produced && n < 8; n++) {
         u8 *slot = window + JW_TX_BASE + (tx % JW_RING_COUNT) * JW_SLOT_SIZE;
+        win_sync(slot, JW_SLOT_SIZE);
         u32 size; memcpy(&size, slot, 4);
         if (size >= 14 && size <= JW_FRAME_MAX) {
             int result = bcm_wifi_send(slot + 4, size);
@@ -429,6 +430,7 @@ void hv_j316s_wifi_poll(void)
         if (size <= 0) break;
         if (size < 14 || (u32)size > JW_FRAME_MAX) continue;
         memcpy(slot, &size, 4);
+        win_sync(slot, 4 + (u32)size);
         store_reg(JW_REG_RX_PROD, ++rx);
     }
 }
