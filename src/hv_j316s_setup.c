@@ -2,6 +2,7 @@
 
 #include "../build/build_cfg.h"
 #include "hv_j316s_setup.h"
+#include "hv_j316s_wifi.h"
 
 #include "adt.h"
 #include "aic.h"
@@ -143,7 +144,7 @@ static void write_boot_args(void)
 
 static bool verify_mappings(bool usb, bool input, bool storage)
 {
-    struct hv_stage2_mapping allowed[6 + J316S_SETUP_XHCI_COUNT + 3 + 1] = {
+    struct hv_stage2_mapping allowed[6 + J316S_SETUP_XHCI_COUNT + 3 + 2] = {
         {J316S_SETUP_GIC_DIST, 0, 0x10000, 0, HV_STAGE2_MAPPING_HOOK},
         {J316S_SETUP_GIC_REDIST, 0, HV_VGIC_T6000_CPU_COUNT * HV_VGIC_REDIST_STRIDE,
          0, HV_STAGE2_MAPPING_HOOK},
@@ -170,6 +171,10 @@ static bool verify_mappings(bool usb, bool input, bool storage)
     if (storage)
         allowed[count++] = (struct hv_stage2_mapping){
             J316S_SETUP_ECAM, 0, J316S_SETUP_ECAM_SIZE, 0, HV_STAGE2_MAPPING_HOOK};
+    /* Stage-2 mappings are compared in creation order; the bridge is mapped last. */
+    if (hv_j316s_wifi_mapped())
+        allowed[count++] = (struct hv_stage2_mapping){
+            J316S_SETUP_WIFI_BASE, 0, J316S_SETUP_WIFI_SIZE, 0, HV_STAGE2_MAPPING_HOOK};
     return hv_stage2_state_matches(allowed, count);
 }
 
@@ -438,7 +443,7 @@ bool hv_j316s_setup_run(void)
                                     J316S_SETUP_DIAGNOSTICS_STORAGE_FLAG);
     if ((header->flags & ~(J316S_SETUP_USB_FLAG | J316S_SETUP_INPUT_FLAG |
                           J316S_SETUP_STORAGE_FLAG |
-                          J316S_SETUP_DIAGNOSTICS_STORAGE_FLAG)) ||
+                          J316S_SETUP_DIAGNOSTICS_STORAGE_FLAG | J316S_SETUP_WIFI_FLAG)) ||
         (diagnostics_storage && (!input || (header->flags & J316S_SETUP_STORAGE_FLAG))) ||
         ((input || storage) && !usb) || size_available < fixed_size ||
         header->media_size < SZ_1M || header->media_size % 512 ||
@@ -519,6 +524,11 @@ bool hv_j316s_setup_run(void)
         return false;
     }
 
+    if (!hv_j316s_wifi_init(header->flags & J316S_SETUP_WIFI_FLAG) ||
+        !verify_mappings(true, input, storage)) {
+        printf("J316s Setup: Wi-Fi bridge mapping rejected\n");
+        return false;
+    }
     hv_prepare_guest_cpu_state();
     msr(SYS_IMP_APL_SPRR_CONFIG_EL1, 1);
     msr(SYS_IMP_APL_GXF_CONFIG_EL1, 1);

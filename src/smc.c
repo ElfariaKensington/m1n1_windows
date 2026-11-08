@@ -99,8 +99,14 @@ static int smc_cmd(smc_dev_t *smc, u64 message)
     message |= FIELD_PREP(SMC_MSG_ID, id);
 
     smc_send(smc, message);
-    while (smc->outstanding[id])
+    u64 deadline = get_ticks() + mrs(CNTFRQ_EL0) * 2;
+    while (smc->outstanding[id]) {
+        if (get_ticks() >= deadline) {
+            smc->outstanding[id] = false;
+            return -1;
+        }
         smc_work(smc);
+    }
 
     u64 result = smc->ret[id];
     u32 ret = FIELD_GET(SMC_RESULT_RESULT, result);
@@ -153,7 +159,10 @@ smc_dev_t *smc_init(void)
 
     smc_send(smc, initialize);
 
+    u64 deadline = get_ticks() + mrs(CNTFRQ_EL0) * 2;
     while (!smc->shmem) {
+        if (get_ticks() >= deadline)
+            goto out_rtkit;
         int ret = smc_work(smc);
         if (ret < 0)
             goto out_rtkit;

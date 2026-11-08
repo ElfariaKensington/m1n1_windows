@@ -3,6 +3,7 @@
 #include "adt.h"
 #include "pcie.h"
 #include "pmgr.h"
+#include "smc.h"
 #include "string.h"
 #include "tunables.h"
 #include "utils.h"
@@ -206,7 +207,7 @@ struct state {
 
 static struct state controllers[NUM_CONTROLLERS];
 
-static int pcie_init_controller(int controller, const char *path)
+static int pcie_init_controller(int controller, const char *path, u32 port_mask, bool wlan)
 {
     struct state *state = &controllers[controller];
     int adt_path[8];
@@ -463,6 +464,10 @@ static int pcie_init_controller(int controller, const char *path)
     }
 
     for (u32 port = 0; port < state->port_count; port++) {
+        if (!(port_mask & BIT(port))) {
+            config_base += (1 << 15);
+            continue;
+        }
         char bridge[64];
         int bridge_offset;
 
@@ -564,6 +569,29 @@ static int pcie_init_controller(int controller, const char *path)
 
         set32(state->port_base[port] + APCIE_PORT_APPCLK, APCIE_PORT_APPCLK_EN);
 
+        if (wlan) {
+            /* Asahi pcie-apple setup_link + gpio-macsmc CMD_OUTPUT.
+             * PERST/CLKREQ GPIO identities are checked by pcie_init_wlan. */
+            mask32(0x39b028010ULL, 0x6f, 2); /* GPIO4 output, PERST# asserted */
+            clear32(state->port_base[port] + APCIE_PORT_RESET, APCIE_PORT_RESET_DIS);
+            smc_dev_t *smc = smc_init();
+            if (!smc)
+                return -1;
+            int ret = smc_write_u32(smc, 0x67503064, 0x01000001); /* gP0d */
+            smc_shutdown(smc);
+            if (ret != 0)
+                return -1;
+            mask32(state->port_phy_base[port], BIT(0) | BIT(1), BIT(0));
+            if (poll32(state->port_phy_base[port], BIT(2), BIT(2), 50000))
+                return -1;
+            set32(state->port_phy_base[port], BIT(1));
+            if (poll32(state->port_phy_base[port], BIT(3), BIT(3), 50000))
+                return -1;
+            set32(state->port_phy_base[port], BIT(9) | BIT(10));
+            set32(state->port_base[port] + 0x810, BIT(0)); /* PORT_REFCLK_EN */
+            udelay(100000);
+        }
+
         if (state->pcie_regs->type == APCIE_T602X) {
             clear32(state->port_phy_base[port] + APCIE_PHY_CTRL,
                     APCIE_PHY_CTRL_CLK0REQ | APCIE_PHY_CTRL_CLK1REQ);
@@ -592,6 +620,11 @@ static int pcie_init_controller(int controller, const char *path)
             set32(state->port_base[port] + APCIE_PORT_RESET, APCIE_PORT_RESET_DIS);
         }
 
+        if (wlan) {
+            set32(0x39b028010ULL, BIT(0));
+            udelay(100000);
+        }
+
         if (poll32(state->port_base[port] + APCIE_PORT_STATUS, APCIE_PORT_STATUS_RUN,
                    APCIE_PORT_STATUS_RUN, 250000)) {
             printf("pcie: Port failed to come up on %s\n", bridge);
@@ -611,6 +644,12 @@ static int pcie_init_controller(int controller, const char *path)
                    250000)) {
             printf("pcie: Port failed to become idle on %s\n", bridge);
             return -1;
+        }
+        if (wlan && !(read32(state->port_base[port] + APCIE_PORT_LINKSTS) & APCIE_PORT_LINKSTS_UP)) {
+            set32(state->port_base[port] + 0x80, BIT(0)); /* PORT_LTSSMCTL_START */
+            if (poll32(state->port_base[port] + APCIE_PORT_LINKSTS,
+                       APCIE_PORT_LINKSTS_UP, APCIE_PORT_LINKSTS_UP, 500000))
+                return -1;
         }
 
         /* Do it again? */
@@ -729,14 +768,42 @@ int pcie_init(void)
     if (pcie_initialized)
         return 0;
 
-    success |= pcie_init_controller(APCIE, "/arm-io/apcie") == 0;
-    success |= pcie_init_controller(APCIE_GE0, "/arm-io/apcie-ge0") == 0;
-    success |= pcie_init_controller(APCIE_GE1, "/arm-io/apcie-ge1") == 0;
+    success |= pcie_init_controller(APCIE, "/arm-io/apcie", ~0u, false) == 0;
+    success |= pcie_init_controller(APCIE_GE0, "/arm-io/apcie-ge0", ~0u, false) == 0;
+    success |= pcie_init_controller(APCIE_GE1, "/arm-io/apcie-ge1", ~0u, false) == 0;
 
     if (success)
         pcie_initialized = true;
 
     return success ? 0 : -1;
+}
+
+int pcie_init_wlan(void)
+{
+    int path[8];
+    u64 base, size;
+    int node = adt_path_offset(adt, "/arm-io/apcie");
+    int gpio = adt_path_offset_trace(adt, "/arm-io/gpio0", path);
+    int bridge = adt_path_offset(adt, "/arm-io/apcie/pci-bridge0");
+    u32 phandle, len;
+    if (node < 0 || gpio < 0 || bridge < 0 ||
+        !adt_is_compatible(adt, node, "apcie,t6000") ||
+        adt_get_reg(adt, path, "reg", 0, &base, &size) ||
+        base != 0x39b028000ULL || size != SZ_16K ||
+        ADT_GETPROP(adt, gpio, "AAPL,phandle", &phandle) < 0)
+        return -1;
+    const u32 *perst = adt_getprop(adt, bridge, "function-perst", &len);
+    if (!perst || len != 16 || perst[0] != phandle ||
+        perst[1] != 0x4750494f || perst[2] != 4 || perst[3] != 0)
+        return -1;
+    const u32 *clkreq = adt_getprop(adt, bridge, "function-clkreq", &len);
+    if (!clkreq || len != 16 || clkreq[0] != phandle ||
+        clkreq[1] != 0x4750494f || clkreq[2] != 0 || clkreq[3] != 2)
+        return -1;
+    /* Preserve inherited GPIO controller power; its ADT has no clock-gates. */
+    mask32(base + 4 * 4, 0x6f, 2);
+    mask32(base, (3u << 5) | BIT(9), (2u << 5) | BIT(9));
+    return pcie_init_controller(APCIE, "/arm-io/apcie", BIT(0), true);
 }
 
 int pcie_shutdown(void)

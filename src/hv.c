@@ -16,6 +16,7 @@
 #include "hv_irq_routes.h"
 #ifdef M1N1_J316S_SETUP
 #include "hv_j316s_setup.h"
+#include "hv_j316s_wifi.h"
 #endif
 #include "hv_nvme_queue.h"
 #include "hv_vgic.h"
@@ -1410,6 +1411,7 @@ void hv_tick(struct exc_info *ctx)
     hv_vuart_poll();
     hv_fb_stream_tick(&hv_framebuffer_stream);
 #ifdef M1N1_J316S_SETUP
+    hv_j316s_wifi_poll();
     hv_j316s_setup_draw(ctx->elr);
 #endif
 }

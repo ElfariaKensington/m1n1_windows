@@ -63,6 +63,10 @@ CFG :=
 ifeq ($(J316S_SETUP),1)
 CFG += M1N1_J316S_SETUP
 endif
+ifeq ($(J316S_WIFI),1)
+CFG += M1N1_J316S_WIFI
+CFLAGS += -I../.build/j316s-wifi/local
+endif
 ifeq ($(RELEASE),1)
 CFG += RELEASE
 endif
@@ -393,7 +397,7 @@ FP_OBJECTS := \
 	math/powf_data.o
 
 ifeq ($(J316S_SETUP),1)
-OBJECTS += hv_j316s_setup.o
+OBJECTS += hv_j316s_setup.o hv_j316s_wifi.o wifi_bcm.o
 endif
 
 BUILD_OBJS := $(patsubst %,build/%,$(OBJECTS))
